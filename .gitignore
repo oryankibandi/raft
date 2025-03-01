@@ -30,3 +30,6 @@ Cargo.lock
 # Log files
 *.log
 *.json
+
+# Build file
+raft

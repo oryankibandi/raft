@@ -24,8 +24,8 @@ type ClientResponse struct {
 func (t *ClientRPC) ClientReplicationRequest(args ClientRequestRPC, clientRes *ClientResponse) error {
 	// TODO: Check if is leader,if isn't redirect to leader
 
-	if state.ServerState != "leader" {
-		clientRes.CurrentLeader = state.VotedFor
+	if state.Node.Role != state.LEADER {
+		clientRes.CurrentLeader = state.Node.VotedFor
 		clientRes.Success = false
 
 		return nil
@@ -36,8 +36,16 @@ func (t *ClientRPC) ClientReplicationRequest(args ClientRequestRPC, clientRes *C
 		return nil
 	}
 
+	byteEntr := make([][]byte, 0)
+
+	for _, v := range args.Entries {
+		k := make([]byte, state.LOG_LENGTH)
+		copy(k, v)
+		byteEntr = append(byteEntr, k)
+	}
+
 	// Write to leader's logs
-	err, _ := state.WriteToLogs(args.Entries)
+	err := state.Node.AppendLeaderEntry(byteEntr)
 
 	if err != nil {
 		clientRes.Success = false
