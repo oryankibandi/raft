@@ -98,7 +98,7 @@ func ReplicateLogs(entries []string) (err error) {
 
 	// convert string to bytes and append
 	for _, entry := range entries {
-		byteEntry := make([]byte, state.LOG_LENGTH)
+		byteEntry := make([]byte, state.LOG_LENGTH-8)
 		copy(byteEntry, entry)
 		entriesInBytes = append(entriesInBytes, byteEntry)
 	}
@@ -196,7 +196,7 @@ func (t *ReplicationRPC) AppendEntriesRPC(args *AppendEntriesArgs, appendRes *Ap
 		fmt.Println("ENTRY AT PREVLOGINDEX DOES NOT MATCH...")
 		fmt.Printf("PREVLOGINDEX: => %d \t\t LOGLEN => %d\n", args.PrevLogIndex, len(state.Node.Logs))
 
-		if len(state.Node.Logs)-1 >= args.PrevLogIndex {
+		if len(state.Node.Logs)-1 > args.PrevLogIndex {
 			fmt.Printf("LASTLOGTERM => %d \t\t LEADERLASTLOGTERM => %d\n", state.Node.Logs[args.PrevLogIndex].Term, args.PrevLogTerm)
 
 			fmt.Println("CONFLICTING ENTRY => ", state.Node.Logs[args.PrevLogIndex])

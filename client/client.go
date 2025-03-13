@@ -39,7 +39,7 @@ func (t *ClientRPC) ClientReplicationRequest(args ClientRequestRPC, clientRes *C
 	byteEntr := make([][]byte, 0)
 
 	for _, v := range args.Entries {
-		k := make([]byte, state.LOG_LENGTH)
+		k := make([]byte, state.LOG_LENGTH-8)
 		copy(k, v)
 		byteEntr = append(byteEntr, k)
 	}
@@ -53,9 +53,9 @@ func (t *ClientRPC) ClientReplicationRequest(args ClientRequestRPC, clientRes *C
 	}
 
 	// Send to followers
-	errr := replication.ReplicateLogs(args.Entries)
+	err = replication.ReplicateLogs(args.Entries)
 
-	if errr != nil {
+	if err != nil {
 		fmt.Println("Unable to replicate => ", err.Error())
 
 		clientRes.Success = false

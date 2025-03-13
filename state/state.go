@@ -122,6 +122,9 @@ func InitializeState(wg *sync.WaitGroup, ip string) {
 
 func (s *Server) AppendLeaderEntry(entries [][]byte) (err error) {
 	fmt.Println("APPEDNING ELADER ENTRY ...")
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+
 	for _, entry := range entries {
 		n := Entry{
 			Term:    s.Term,
@@ -221,6 +224,7 @@ Stores Node details (logs, currentTerm, VotedFor) in persistent storage
 */
 func (s *Server) Persist(numOfEntries int, updateMetadata bool, truncate bool) (err error, n int) {
 
+	fmt.Println("LENGTH OF ENTRIES TO PERSIST ==================> ", numOfEntries)
 	// offset af which we begin writing the new logs, should replace existing logs from that offset if any
 	offset := 16 + ((len(s.Logs) - numOfEntries) * LOG_LENGTH)
 
@@ -253,12 +257,12 @@ func (s *Server) Persist(numOfEntries int, updateMetadata bool, truncate bool) (
 		}
 
 		if err := bw.Flush(); err != nil {
-			panic("Unable too flush data in MEtADATA => ")
+			panic("Unable to flush data in MEtADATA => ")
 		} else {
 			fmt.Println("Flushed Metadata contents of buffer to io.Writer...")
 		}
-
 	}
+
 	// Get file size
 	fileStat, err := s.Fd.Stat()
 
@@ -291,10 +295,11 @@ func (s *Server) Persist(numOfEntries int, updateMetadata bool, truncate bool) (
 
 	fmt.Println("LENGTH OF K => ", len(k))
 
-	logs := make([]byte, LOG_LENGTH*numOfEntries)
+	logs := make([]byte, 0)
 
 	for _, v := range k {
-		newLog := make([]byte, 64)
+		newLog := make([]byte, LOG_LENGTH)
+		fmt.Println("ADDING ENTRY WITH TERM => ", v.Term)
 		binary.LittleEndian.PutUint64(newLog[:8], uint64(v.Term))
 		copy(newLog[8:], v.Command)
 
@@ -376,12 +381,24 @@ func (s *Server) restore() {
 	var preliminaryTerm int64 = 0
 	// Read the log entries and append to Server struct
 	for offset < size {
-		br.Read(log)
+		p, err := br.Read(log)
+
+		if err != nil {
+			fmt.Println("ERR: ", err)
+			panic("Unable to read log")
+		}
+		fmt.Printf("READ BYTES => %d\n", p)
+
+		fmt.Printf("OFFSET => %d \n", offset)
+
+		// fmt.Println("RAW TERM => ", log[:8])
+		// fmt.Println("LITTLE ENDIAN TERM => ", binary.LittleEndian.Uint64(log[:8]))
+		// fmt.Println("LITTLE ENDIAN TERM FOR FIRST byte only => ", int(log[0]))
 
 		// Add log to struct
 		newEntry := Entry{
 			Term:    int64(binary.LittleEndian.Uint64(log[:8])),
-			Command: log[16:],
+			Command: log[8:],
 		}
 
 		s.Logs = append(s.Logs, newEntry)
@@ -391,16 +408,19 @@ func (s *Server) restore() {
 			preliminaryTerm = newEntry.Term
 		}
 
-		if offset+64 > size {
+		fmt.Printf("READ LOG TERM => %d LOG:=> %s\n", newEntry.Term, string(newEntry.Command), newEntry.Command)
+
+		if offset+int64(p) > size {
 			offset += size - offset
 		} else {
-			offset += 64
+			offset += int64(p)
 		}
 		if offset == size {
 			break
 		}
 
-		fmt.Println("READ LOG TERM => ", newEntry.Term)
+		// seek to current offset location
+		// s.Fd.Seek(offset, 0)
 	}
 
 	s.Term = preliminaryTerm
@@ -412,8 +432,10 @@ func (s *Server) restore() {
 Updates VotedFor and stores in persistent state
 */
 func (s *Server) SetVotedFor(serverId string) {
+	s.Mu.Lock()
 	fmt.Println("Setting Voted For...")
 	s.VotedFor = serverId
+	s.Mu.Unlock()
 
 	s.Persist(0, true, false)
 }
@@ -513,7 +535,7 @@ func (s *Server) SetTerm(newTerm int) {
 	}
 
 	s.Mu.Unlock()
-	s.Persist(0, true, false)
+	// s.Persist(0, true, false)
 }
 
 /**
