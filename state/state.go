@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"raft/membership"
 	"raft/utils"
 	"sync"
 )
@@ -495,31 +496,14 @@ func (s *Server) DecrementTerm() {
 /*
 Get's the last Logs term
 */
-func (s *Server) GetLastLogTerm(newEntriesCount int) (term int) {
+func (s *Server) GetLastLogTerm(entryIndex int) (term int) {
 	logLen := len(s.Logs)
 	if logLen <= 0 {
 		return 0
 	}
 
-	if newEntriesCount <= 0 {
-		// No New Entries
-		return int(s.Logs[logLen-1].Term)
-
-	} else if logLen == newEntriesCount {
-		// No entries before the new Entries
-		return 0
-	} else {
-		return int(s.Logs[logLen-(1+newEntriesCount)].Term)
-	}
+	return int(s.Logs[entryIndex].Term)
 }
-
-//func SetVotedFor(candidateId string) {
-//	mu.Lock()
-//	VotedFor = candidateId
-//	mu.Unlock()
-//
-//	WriteToPersistentState(CurrentTerm, &candidateId, CommitIndex)
-//}
 
 /**
 *  Sets a new term to state(volatile and persisent)
@@ -538,47 +522,13 @@ func (s *Server) SetTerm(newTerm int) {
 	// s.Persist(0, true, false)
 }
 
-/**
-*  Sets a new CommitIndex to state(volatile and persisent)
- */
-//func SetTerm(commIdx int) {
-//	WriteToPersistentState(CurrentTerm, nil, CommitIndex)
-
-//}
-
-//	func ReadPersistentState(wg *sync.WaitGroup) (persData PersistentState, err error) {
-//		defer wg.Done()
-//
-//		var state PersistentState
-//
-//		f, err := os.OpenFile("server_data.json", os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
-//
-//		stat, err := f.Stat()
-//
-//		if err != nil {
-//			log.Fatal(err.Error())
-//			return state, err
-//		}
-//
-//		fmt.Println("FILE ENGTH => %d", stat.Size())
-//
-//		// if file is empty, initialize values to zero
-//		if stat.Size() <= 0 {
-//			WriteToPersistentState(0, &VotedFor, 0)
-//		}
-//
-//		j := json.NewDecoder(f)
-//		j.Decode(&state)
-//
-//		return state, nil
-//	}
 func (s *Server) UpdateServerState(newState NodeRole) {
-	defer s.Mu.Unlock()
 	if newState != CANDIDATE && newState != FOLLOWER && newState != LEADER {
 		log.Fatal("State can only be `candidate`, `leader` or `follower`")
 		return
 	}
 
+	defer s.Mu.Unlock()
 	s.Mu.Lock()
 	s.Role = newState
 
@@ -586,99 +536,8 @@ func (s *Server) UpdateServerState(newState NodeRole) {
 	if newState == FOLLOWER {
 		s.VotedFor = ""
 		//s.Persist(0, true, false)
+	} else if newState == LEADER {
+		go membership.InitializeClusterMembers(uint(len(s.Logs)))
 	}
 
 }
-
-// func WriteToPersistentState(term int, votedFor *string, commitIndex int) {
-// 	newState := PersistentState{}
-//
-// 	if term != 0 {
-// 		newState.CurrentTerm = term
-// 	}
-//
-// 	if votedFor != nil {
-// 		newState.VotedFor = *votedFor
-// 	}
-//
-// 	if commitIndex != 0 {
-// 		newState.CommitIndex = commitIndex
-// 	}
-//
-// 	f, err := os.OpenFile("./server_data.json", os.O_CREATE|os.O_WRONLY, 0644)
-//
-// 	if err != nil {
-// 		log.Fatal(err)
-//
-// 		return
-// 	}
-//
-// 	defer f.Close()
-//
-// 	fmt.Println("PersistentState STRUCT => %q", newState)
-//
-// 	// Encode the Go struct to JSON and write to the file
-// 	encoder := json.NewEncoder(f)
-// 	encoder.SetIndent("", "  ") // For pretty-printing
-// 	err = encoder.Encode(newState)
-// 	if err != nil {
-// 		fmt.Println("Error encoding JSON:", err)
-// 		return
-// 	}
-//
-// }
-//
-// /**
-// * Writes logs from AppendEntryRPC to log file
-//  */
-// func WriteToLogs(logs []string) (err error, success bool) {
-// 	f, err := os.OpenFile("raft.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, os.ModeAppend)
-//
-// 	if err != nil {
-// 		fmt.Println(err.Error())
-// 		return err, false
-// 	}
-//
-// 	defer f.Close()
-//
-// 	for _, log := range logs {
-// 		newLog, err := addMetadataToLog(log)
-//
-// 		if err != nil {
-// 			fmt.Println("Invalid log => ", log)
-//
-// 			return err, false
-// 		}
-//
-// 		if _, err := f.Write([]byte(newLog)); err != nil {
-// 			fmt.Println("Unable to write log => ", err)
-// 			f.Close()
-// 			break
-// 		}
-//
-// 		// Update commit index
-// 		mu.Lock()
-// 		CommitIndex++
-// 		LogIndex++
-// 		mu.Unlock()
-// 	}
-//
-// 	// Ensure commit index is updated:WriteToLogs
-// 	WriteToPersistentState(CurrentTerm, &VotedFor, CommitIndex)
-//
-// 	return nil, true
-// }
-//
-// /**
-// * Prepends term and index to log
-//  */
-// func addMetadataToLog(entry string) (newEntry string, err error) {
-// 	if entry == "" {
-// 		return "", errors.New("Invalid entry provided")
-// 	}
-//
-// 	newLog := fmt.Sprintf("<%d , %d, %s>\n", LogIndex+1, CurrentTerm, entry)
-//
-// 	return newLog, nil
-//
-// }
