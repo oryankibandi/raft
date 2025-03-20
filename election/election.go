@@ -88,7 +88,7 @@ func StartElection() {
 	voteForSelf(&votes)
 	members := membership.GetClusterMembers()
 
-	// loop through members and send requests in parallel
+	// loop through members and send requests  parallel
 	for _, mem := range members {
 		if mem != state.Node.Ip {
 			Wg.Add(1)
@@ -101,7 +101,7 @@ func StartElection() {
 
 	var result float64 = float64(len(members)) / float64(2)
 
-	if votes >= int(math.Round(result)) {
+	if votes >= int(math.Round(result)) && votes%2 != 0 {
 		state.Node.UpdateServerState(state.LEADER)
 		timeouts.CancelElectionTimer()
 		// save term

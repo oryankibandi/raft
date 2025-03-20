@@ -3,6 +3,7 @@ package state
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -123,8 +124,7 @@ func InitializeState(wg *sync.WaitGroup, ip string) {
 
 func (s *Server) AppendLeaderEntry(entries [][]byte) (err error) {
 	fmt.Println("APPEDNING ELADER ENTRY ...")
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
+	var newLogs []Entry
 
 	for _, entry := range entries {
 		n := Entry{
@@ -132,17 +132,44 @@ func (s *Server) AppendLeaderEntry(entries [][]byte) (err error) {
 			Command: entry,
 		}
 
-		s.Logs = append(s.Logs, n)
+		newLogs = append(newLogs, n)
 	}
+
+	s.Mu.Lock()
+	s.Logs = append(s.Logs, newLogs...)
+	s.Mu.Unlock()
 
 	// Persist
 	err, _ = s.Persist(len(entries), false, false)
 
 	if err != nil {
-		return err
+		return nil
 	}
 
 	return nil
+}
+
+/*
+Retrieves unreplicated logs for a speciic follower
+*/
+func (s *Server) GetUnreplicatedLogs(addr string) (err error, logs [][]byte) {
+	if addr == "" {
+		return errors.New("Address is required"), nil
+	}
+
+	unreplicatedLogs := s.Logs[int(membership.ClusterMembers.Members[addr]):]
+
+	if len(unreplicatedLogs) <= 0 {
+		return nil, make([][]byte, 0)
+	}
+
+	logsInBytes := make([][]byte, 0)
+
+	for _, v := range unreplicatedLogs {
+		logsInBytes = append(logsInBytes, v.Command)
+	}
+
+	return nil, logsInBytes
 }
 
 /**
@@ -224,7 +251,6 @@ func (s *Server) clearConflictingEntries(index int) {
 Stores Node details (logs, currentTerm, VotedFor) in persistent storage
 */
 func (s *Server) Persist(numOfEntries int, updateMetadata bool, truncate bool) (err error, n int) {
-
 	fmt.Println("LENGTH OF ENTRIES TO PERSIST ==================> ", numOfEntries)
 	// offset af which we begin writing the new logs, should replace existing logs from that offset if any
 	offset := 16 + ((len(s.Logs) - numOfEntries) * LOG_LENGTH)
