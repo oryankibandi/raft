@@ -66,7 +66,7 @@ func voteForSelf(votes *int) {
 		return
 	}
 
-	state.SetVotedFor(state.ServerAddress)
+	state.Node.SetVotedFor(state.Node.Id)
 	*votes++
 }
 
@@ -82,15 +82,15 @@ func StartElection() {
 
 	var votes int = 0
 
-	state.IncrementTerm(nil)
-	state.UpdateServerState("candidate")
+	state.Node.IncrementTerm(nil)
+	state.Node.UpdateServerState(state.CANDIDATE)
 
 	voteForSelf(&votes)
 	members := membership.GetClusterMembers()
 
 	// loop through members and send requests in parallel
 	for _, mem := range members {
-		if mem != state.ServerAddress {
+		if mem != state.Node.Ip {
 			Wg.Add(1)
 			go requestVote(mem, &votes)
 		}
@@ -102,12 +102,17 @@ func StartElection() {
 	var result float64 = float64(len(members)) / float64(2)
 
 	if votes >= int(math.Round(result)) {
-		state.UpdateServerState("leader")
+		state.Node.UpdateServerState(state.LEADER)
 		timeouts.CancelElectionTimer()
+		// save term
+		go state.Node.Persist(0, true, false)
 		go initLeaderFlow()
 	} else {
-		state.DecrementTerm()
-		state.UpdateServerState("follower")
+		state.Node.DecrementTerm()
+		state.Node.UpdateServerState(state.FOLLOWER)
+		// save term
+		// go state.Node.Persist(0, true, false)
+
 		go InitElectionFlow()
 	}
 
@@ -134,7 +139,7 @@ func requestVote(serverAddr string, votes *int) {
 
 	fmt.Println("Sending RequestVoteRPC to ADDR: ", serverAddr)
 
-	args := &RequestVoteArgs{Term: state.CurrentTerm, CandidateId: state.ServerAddress, LastLogIndex: state.CommitIndex, LastLogTerm: state.CurrentTerm}
+	args := &RequestVoteArgs{Term: int(state.Node.Term), CandidateId: state.Node.Id, LastLogIndex: int(state.Node.CommitIndex), LastLogTerm: state.Node.GetLastLogTerm(0)}
 	res := &RequestVoteResponse{}
 
 	err = client.Call("ElectionRPC.RequestVoteRPC", args, &res)
@@ -155,21 +160,21 @@ func requestVote(serverAddr string, votes *int) {
 
 func (t *ElectionRPC) RequestVoteRPC(args *RequestVoteArgs, reqVoteRes *RequestVoteResponse) error {
 	// If candidate term is less or equal, deny vote
-	if args.Term < state.CurrentTerm {
+	if args.Term < int(state.Node.Term) {
 		reqVoteRes.VoteGranted = false
 		return nil
 	}
 
-	if args.LastLogIndex >= state.CommitIndex {
+	if args.LastLogIndex >= int(state.Node.CommitIndex) {
 		timeouts.ResetElectionTimer()
 		reqVoteRes.VoteGranted = true
-		state.SetVotedFor(args.CandidateId)
+		state.Node.SetVotedFor(args.CandidateId)
 
 		fmt.Println("Voted For ===> ", args.CandidateId)
 		return nil
 	}
 
-	fmt.Printf("(%s) Did not vote for %s", state.ServerAddress, args.CandidateId)
+	fmt.Printf("(%s) Did not vote for %s", state.Node.Ip, args.CandidateId)
 
 	reqVoteRes.VoteGranted = false
 	return nil
@@ -185,6 +190,7 @@ func (t *ElectionRPC) RequestVoteRPC(args *RequestVoteArgs, reqVoteRes *RequestV
 //}
 
 func initLeaderFlow() {
+	fmt.Println("INITIALIZING LEADER FLOW...")
 	leaderFlowChan := make(chan bool)
 	resetElecChan := make(chan bool)
 	go replication.StartHeartbeatTimer(&leaderFlowChan, &resetElecChan)

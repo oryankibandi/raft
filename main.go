@@ -32,7 +32,6 @@ func main() {
 		return
 	}
 
-	state.SetServerAdd(os.Args[1])
 	formattedAddr := fmt.Sprintf("localhost%s", os.Args[1])
 	fmt.Println("ADDR => ", formattedAddr)
 	// commitedIndex := 0
@@ -40,8 +39,9 @@ func main() {
 
 	// Read persistent state for current term and Voted for values
 	Wg.Add(1)
-	go state.InitializeState(&Wg)
+	go state.InitializeState(&Wg, os.Args[1])
 	Wg.Wait()
+	fmt.Println("Initialized state")
 	// Initialize election timeout
 	go election.InitElectionFlow()
 
@@ -55,7 +55,9 @@ func main() {
 	rpc.Register(clientRPC)
 
 	// Start listening on a specific port
-	listener, err := net.Listen("tcp", state.ServerAddress)
+
+	fmt.Println("POrt => ", state.Node.Ip)
+	listener, err := net.Listen("tcp", state.Node.Ip)
 	if err != nil {
 		fmt.Println("Error starting listener:", err)
 

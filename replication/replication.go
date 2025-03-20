@@ -21,13 +21,14 @@ type AppendEntriesArgs struct {
 	LeaderId          string
 	PrevLogIndex      int
 	PrevLogTerm       int
-	Entries           []string
+	Entries           [][]byte
 	LeaderCommitIndex int
 }
 
 type AppendEntriesRes struct {
-	Success bool
-	Term    int
+	Success              bool
+	Term                 int
+	FollowerLastLogIndex int
 }
 
 var mu sync.Mutex
@@ -47,7 +48,7 @@ func StartHeartbeatTimer(revert *chan bool, resetElecTimerChan *chan bool) {
 		case <-heartBeatTicker.C:
 			fmt.Printf("Heartbeat timeout reached...\n")
 
-			if state.ServerState != "leader" {
+			if state.Node.Role != state.LEADER {
 				fmt.Println("Server not leader, terminating heartbeat timer...")
 				heartBeatTicker.Stop()
 				break
@@ -73,9 +74,9 @@ func disperseHeartbeatRequests() {
 	responses := 0
 	// loop through members and send heartbeat requests in parallel
 	for _, mem := range members {
-		if mem != state.ServerAddress {
+		if mem != state.Node.Ip {
 			wg.Add(1)
-			go sendAppendEntriesRPC(mem, &responses, make([]string, 0))
+			go sendAppendEntriesRPC(mem, &responses, make([][]byte, 0))
 		}
 	}
 
@@ -83,7 +84,7 @@ func disperseHeartbeatRequests() {
 
 	// Check if the required quota of servers have responded successfully
 	if responses+1 < int(float64(len(members))/float64(2)) {
-		state.UpdateServerState("follower")
+		state.Node.UpdateServerState(state.FOLLOWER)
 		*revertToLeaderChan <- true
 	}
 
@@ -94,13 +95,21 @@ func disperseHeartbeatRequests() {
 **/
 func ReplicateLogs(entries []string) (err error) {
 	members := membership.GetClusterMembers()
+	var entriesInBytes [][]byte = make([][]byte, 0)
+
+	// convert string to bytes and append
+	for _, entry := range entries {
+		byteEntry := make([]byte, state.LOG_LENGTH-8)
+		copy(byteEntry, entry)
+		entriesInBytes = append(entriesInBytes, byteEntry)
+	}
 
 	responses := 0
 	// loop through members and send heartbeat requests in parallel
 	for _, mem := range members {
-		if mem != state.ServerAddress {
+		if mem != state.Node.Ip {
 			wg.Add(1)
-			go sendAppendEntriesRPC(mem, &responses, entries)
+			go sendAppendEntriesRPC(mem, &responses, entriesInBytes)
 		}
 	}
 
@@ -108,7 +117,7 @@ func ReplicateLogs(entries []string) (err error) {
 
 	// Check if the required quota of servers have responded successfully
 	if responses+1 < int(float64(len(members))/float64(2)) {
-		state.UpdateServerState("follower")
+		state.Node.UpdateServerState(state.FOLLOWER)
 		*revertToLeaderChan <- true
 
 		return errors.New("Unable to replicate")
@@ -120,7 +129,7 @@ func ReplicateLogs(entries []string) (err error) {
 /**
 * Send's append entries RPC to specified address. For heartbeats entries slice is empty
  */
-func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries []string) {
+func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byte) {
 	defer wg.Done()
 	addr := fmt.Sprintf("localhost%s", serverAddr)
 	client, err := rpc.Dial("tcp", addr)
@@ -136,7 +145,10 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries []strin
 
 	fmt.Println("Sending Heartbeat to ADDR: ", serverAddr)
 
-	args := &AppendEntriesArgs{Term: state.CurrentTerm, LeaderId: state.ServerAddress, PrevLogIndex: state.LogIndex, Entries: entries, LeaderCommitIndex: state.CommitIndex}
+	fmt.Println("APPENDENTRIES LENGTH => ", len(state.Node.Logs))
+	// TODO: Switch PrevLogIndex with actual prev log index of follower node(minus no. of logs)
+
+	args := &AppendEntriesArgs{Term: int(state.Node.Term), LeaderId: state.Node.Id, PrevLogIndex: max(int(membership.ClusterMembers.Members[addr])-1, 0), Entries: entries, LeaderCommitIndex: int(state.Node.CommitIndex), PrevLogTerm: state.Node.GetLastLogTerm(max(int(membership.ClusterMembers.Members[addr]-1), 0))}
 	res := &AppendEntriesRes{}
 
 	err = client.Call("ReplicationRPC.AppendEntriesRPC", args, &res)
@@ -147,11 +159,13 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries []strin
 		return
 	}
 
+	fmt.Println("FOLLOWER LAST LOG INDEX ==> ", res.FollowerLastLogIndex)
+
 	// If a follower responds with a higher term, revert to follower
-	if !res.Success && res.Term > state.CurrentTerm {
+	if !res.Success && int64(res.Term) > state.Node.Term {
 		heartBeatTicker.Stop()
-		state.IncrementTerm(&res.Term)
-		state.UpdateServerState("follower")
+		state.Node.IncrementTerm(&res.Term)
+		state.Node.Role = state.FOLLOWER
 		*revertToLeaderChan <- true
 		// election.InitElectionFlow()
 
@@ -163,6 +177,31 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries []strin
 		mu.Lock()
 		*succResponses += 1
 		mu.Unlock()
+
+		go membership.ClusterMembers.IncrementNodeNextIndex(addr, uint(len(entries)))
+	}
+
+	// If follower is missing logs, recalibrate and resend
+	if !res.Success && res.FollowerLastLogIndex != 0 {
+		fmt.Println("FOLLOWER LAST LOG INDEX DOES NOT MATCH ==>")
+		if res.FollowerLastLogIndex < int(membership.ClusterMembers.Members[addr]) {
+			// Reduce node nextIndex in state
+			membership.ClusterMembers.DecrementNodeNextIndex(addr, uint(res.FollowerLastLogIndex))
+
+		} else {
+			membership.ClusterMembers.SetNodeNextIndex(addr, uint(res.FollowerLastLogIndex))
+		}
+		// Get logs from the new index onwards
+
+		k := make([][]byte, 0)
+		for _, v := range state.Node.Logs[res.FollowerLastLogIndex:] {
+			k = append(k, v.Command)
+		}
+
+		// Resend Append Entry response
+		sendAppendEntriesRPC(addr, succResponses, k)
+
+		return
 	}
 }
 
@@ -170,41 +209,57 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries []strin
 * Handles AppendEntriesRPC from leader which  includes heartbeats(empty AppendEntriesRPC)
  */
 func (t *ReplicationRPC) AppendEntriesRPC(args *AppendEntriesArgs, appendRes *AppendEntriesRes) error {
-	fmt.Printf("(%s) REPLICATION RPC FROM %s with term %d\n", state.ServerAddress, args.LeaderId, args.Term)
-	fmt.Printf("(%s) CURRENT LEADER => %s WITH TERM => %d\n", state.ServerAddress, state.VotedFor, state.CurrentTerm)
+	lenOfLogs := len(state.Node.Logs)
+	fmt.Printf("(%s) REPLICATION RPC FROM %s with term %d\n", state.Node.Ip, args.LeaderId, args.Term)
+	fmt.Printf("(%s) CURRENT LEADER => %s WITH TERM => %d\n", state.Node.Ip, state.Node.VotedFor, state.Node.Term)
 
-	if args.LeaderId != state.VotedFor && args.Term <= state.CurrentTerm {
-		fmt.Println("Received RPC from wrong leader...")
+	if args.Term < int(state.Node.Term) {
+		fmt.Println("LEADER TERM IS LESS THAN MY TERM...")
 		appendRes.Success = false
 
 		return nil
 	}
 
-	if args.Term < state.CurrentTerm {
-		appendRes.Success = false
+	// Log Matching check
+	if args.PrevLogIndex > 0 && (lenOfLogs-1 < args.PrevLogIndex || state.Node.Logs[args.PrevLogIndex].Term != int64(args.PrevLogTerm)) {
+		fmt.Println("ENTRY AT PREVLOGINDEX DOES NOT MATCH...")
+		fmt.Printf("PREVLOGINDEX: => %d \t\t LOGLEN => %d\n", args.PrevLogIndex, lenOfLogs)
 
-		return nil
-	}
+		if args.PrevLogIndex > lenOfLogs-1 {
+			// Missing data. This follower is not up to date
+			// Send back last log Index
+			appendRes.FollowerLastLogIndex = lenOfLogs - 1
 
-	// TODO:: Add checks for last log term and commit
-	// Check term and update to leader's term if they don't match
-	if args.Term > state.CurrentTerm && state.VotedFor == args.LeaderId {
-		state.SetTerm(args.Term)
-	} else if args.Term > state.CurrentTerm && state.VotedFor != args.LeaderId {
-		fmt.Println("PREV LOG INDEX => ", args.PrevLogIndex)
-		// if another node has a higher term
-		if args.PrevLogIndex >= state.LogIndex {
-			fmt.Println("leader log index > logIndex")
-			state.SetVotedFor(args.LeaderId)
-			state.SetTerm(args.Term)
-		} else {
-			fmt.Println("Leader log index < logIndex")
+			appendRes.Success = false
 			return nil
+		}
+
+		if lenOfLogs-1 > args.PrevLogIndex {
+			fmt.Printf("LASTLOGTERM => %d \t\t LEADERLASTLOGTERM => %d\n", state.Node.Logs[args.PrevLogIndex].Term, args.PrevLogTerm)
+
+			fmt.Println("CONFLICTING ENTRY => ", state.Node.Logs[args.PrevLogIndex])
+
+			// panic("CONFLICTING ENTRIES")
+			appendRes.Success = false
+			appendRes.FollowerLastLogIndex = lenOfLogs - 1
+
+		}
+		appendRes.Success = false
+
+		return nil
+	}
+
+	// Check term and update to leader's term if they don't match
+	if int64(args.Term) > state.Node.Term {
+		state.Node.SetTerm(args.Term)
+
+		if args.LeaderId != state.Node.VotedFor {
+			state.Node.SetVotedFor(args.LeaderId)
 		}
 	}
 
 	timeouts.ResetElectionTimer()
-	appendRes.Term = state.CurrentTerm
+	appendRes.Term = int(state.Node.Term)
 
 	if len(args.Entries) <= 0 {
 		appendRes.Success = true
@@ -213,12 +268,8 @@ func (t *ReplicationRPC) AppendEntriesRPC(args *AppendEntriesArgs, appendRes *Ap
 
 	// TODO: Enter entries into log, increment logIndex, send back
 
-	err, _ := state.WriteToLogs(args.Entries)
-
-	if err != nil {
-		appendRes.Success = false
-		return nil
-	}
+	// err, _ := state.WriteToLogs(args.Entries)
+	state.Node.AddEntries(args.Term, args.PrevLogIndex, args.Entries, args.LeaderCommitIndex)
 
 	appendRes.Success = true
 	return nil
