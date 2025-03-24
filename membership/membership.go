@@ -60,11 +60,13 @@ func (m *ClusterMemberStruct) IncrementNodeNextIndex(address string, newEntryCou
 	defer m.Mu.Unlock()
 	m.Mu.Lock()
 	ClusterMembers.Members[address] = ClusterMembers.Members[address] + newEntryCount
-	fmt.Println("DONE INCREMENTING:: ", address)
+	fmt.Printf("DONE INCREMENTING:: %s, NEW COUNT => %d\n", address, ClusterMembers.Members[address])
 }
 
 func (m *ClusterMemberStruct) SetNodeNextIndex(address string, newIndex uint) {
 	defer m.Mu.Unlock()
 	m.Mu.Lock()
 	ClusterMembers.Members[address] = newIndex
+	fmt.Printf("DONE SETTING NEXT INDEX:: %s, NEW COUNT => %d\n", address, ClusterMembers.Members[address])
+
 }

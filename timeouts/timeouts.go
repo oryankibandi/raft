@@ -24,7 +24,9 @@ func StartElectionTimeout(reset chan bool) {
 			}
 		case <-electionTimeoutTicker.C:
 			fmt.Printf("Election timout reached...\n")
-			electionTimeoutTicker.Stop()
+			if electionTimeoutTicker != nil {
+				electionTimeoutTicker.Stop()
+			}
 			reset <- true
 			break
 		}

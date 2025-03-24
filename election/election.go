@@ -88,7 +88,7 @@ func StartElection() {
 	voteForSelf(&votes)
 	members := membership.GetClusterMembers()
 
-	// loop through members and send requests  parallel
+	// loop through members and send requests in parallel
 	for _, mem := range members {
 		if mem != state.Node.Ip {
 			Wg.Add(1)
@@ -139,7 +139,13 @@ func requestVote(serverAddr string, votes *int) {
 
 	fmt.Println("Sending RequestVoteRPC to ADDR: ", serverAddr)
 
-	args := &RequestVoteArgs{Term: int(state.Node.Term), CandidateId: state.Node.Id, LastLogIndex: int(state.Node.CommitIndex), LastLogTerm: state.Node.GetLastLogTerm(0)}
+	args := &RequestVoteArgs{
+		Term:         int(state.Node.Term),
+		CandidateId:  state.Node.Id,
+		LastLogIndex: len(state.Node.Logs),
+		LastLogTerm:  state.Node.GetLastLogTerm(0),
+	}
+
 	res := &RequestVoteResponse{}
 
 	err = client.Call("ElectionRPC.RequestVoteRPC", args, &res)
@@ -165,7 +171,7 @@ func (t *ElectionRPC) RequestVoteRPC(args *RequestVoteArgs, reqVoteRes *RequestV
 		return nil
 	}
 
-	if args.LastLogIndex >= int(state.Node.CommitIndex) {
+	if args.LastLogIndex >= len(state.Node.Logs)-1 {
 		timeouts.ResetElectionTimer()
 		reqVoteRes.VoteGranted = true
 		state.Node.SetVotedFor(args.CandidateId)

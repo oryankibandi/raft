@@ -169,7 +169,11 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byt
 		return
 	}
 
-	fmt.Println("FOLLOWER LAST LOG INDEX ==> ", res.FollowerLastLogIndex)
+	if res.FollowerLastLogIndex != -1 {
+		fmt.Println("FOLLOWER LAST LOG INDEX ==> ", res.FollowerLastLogIndex)
+	} else {
+		fmt.Println("FOLLOWER LAST LOG INDEX IS NIL ++++++++++++++++++++>")
+	}
 
 	// If a follower responds with a higher term, revert to follower
 	if !res.Success && int64(res.Term) > state.Node.Term {
@@ -189,18 +193,25 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byt
 		mu.Unlock()
 
 		go membership.ClusterMembers.IncrementNodeNextIndex(serverAddr, uint(len(entries)))
+
+		return
 	}
 
 	// If follower is missing logs, recalibrate and resend
-	if !res.Success && res.FollowerLastLogIndex != 0 {
+	if !res.Success && res.FollowerLastLogIndex >= 0 {
 		fmt.Println("FOLLOWER LAST LOG INDEX DOES NOT MATCH ==>")
+		fmt.Printf("(%s) NEXTNODEINDEX BEFORE INCREMENTING -----------------------------> %d\n", addr, membership.ClusterMembers.Members[serverAddr])
 		// Reduce node nextIndex in state
-		membership.ClusterMembers.SetNodeNextIndex(addr, uint(res.FollowerLastLogIndex))
+		membership.ClusterMembers.SetNodeNextIndex(serverAddr, uint(res.FollowerLastLogIndex+1))
 
 		// Get logs from the new index onwards
 
 		k := make([][]byte, 0)
-		for _, v := range state.Node.Logs[res.FollowerLastLogIndex:] {
+		fmt.Println("FOLLOWER LAST LOG INDE **********> ", res.FollowerLastLogIndex)
+		missingEntries := state.Node.Logs[(res.FollowerLastLogIndex + 1):]
+		for idx, v := range missingEntries {
+			fmt.Println("ADDING COMMAND *******************> ", v.Command)
+			fmt.Println("PLACEHOLDER COMMD ********> ", string(missingEntries[idx].Command))
 			k = append(k, v.Command)
 		}
 
@@ -213,7 +224,18 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byt
 }
 
 func retryAppendEntriesRPC(entries [][]byte, addr string, client *rpc.Client, succResponses *int) {
-	args := &AppendEntriesArgs{Term: int(state.Node.Term), LeaderId: state.Node.Id, PrevLogIndex: max(int(membership.ClusterMembers.Members[addr])-1, 0), Entries: entries, LeaderCommitIndex: int(state.Node.CommitIndex), PrevLogTerm: state.Node.GetLastLogTerm(max(int(membership.ClusterMembers.Members[addr]-1), 0))}
+	address := fmt.Sprintf(":%s", strings.Split(addr, ":")[1])
+
+	args := &AppendEntriesArgs{
+		Term:     int(state.Node.Term),
+		LeaderId: state.Node.Id,
+		PrevLogIndex: max(int(membership.ClusterMembers.Members[address])-1,
+			0),
+		Entries:           entries,
+		LeaderCommitIndex: int(state.Node.CommitIndex),
+		PrevLogTerm:       state.Node.GetLastLogTerm(max(int(membership.ClusterMembers.Members[address]-1), 0)),
+	}
+
 	res := &AppendEntriesRes{}
 
 	err := client.Call("ReplicationRPC.AppendEntriesRPC", args, &res)
@@ -243,8 +265,6 @@ func retryAppendEntriesRPC(entries [][]byte, addr string, client *rpc.Client, su
 		*succResponses += 1
 		mu.Unlock()
 
-		address := fmt.Sprintf(":%s", strings.Split(addr, ":")[1])
-
 		go membership.ClusterMembers.IncrementNodeNextIndex(address, uint(len(entries)))
 	}
 
@@ -273,7 +293,7 @@ func (t *ReplicationRPC) AppendEntriesRPC(args *AppendEntriesArgs, appendRes *Ap
 		if args.PrevLogIndex > lenOfLogs-1 {
 			// Missing data. This follower is not up to date
 			// Send back last log Index
-			appendRes.FollowerLastLogIndex = lenOfLogs - 1
+			appendRes.FollowerLastLogIndex = max(lenOfLogs-1, 0)
 
 			appendRes.Success = false
 			return nil
@@ -286,7 +306,7 @@ func (t *ReplicationRPC) AppendEntriesRPC(args *AppendEntriesArgs, appendRes *Ap
 
 			// panic("CONFLICTING ENTRIES")
 			appendRes.Success = false
-			appendRes.FollowerLastLogIndex = lenOfLogs - 1
+			appendRes.FollowerLastLogIndex = max(lenOfLogs-1, 0)
 
 		}
 		appendRes.Success = false
@@ -308,6 +328,7 @@ func (t *ReplicationRPC) AppendEntriesRPC(args *AppendEntriesArgs, appendRes *Ap
 
 	if len(args.Entries) <= 0 {
 		appendRes.Success = true
+		appendRes.FollowerLastLogIndex = -1
 		return nil
 	}
 
@@ -317,5 +338,6 @@ func (t *ReplicationRPC) AppendEntriesRPC(args *AppendEntriesArgs, appendRes *Ap
 	state.Node.AddEntries(args.Term, args.PrevLogIndex, args.Entries, args.LeaderCommitIndex)
 
 	appendRes.Success = true
+	appendRes.FollowerLastLogIndex = -1
 	return nil
 }

@@ -82,21 +82,6 @@ func getLogIndex() {
 
 func InitializeState(wg *sync.WaitGroup, ip string) {
 	defer wg.Done()
-	//	go getLogIndex()
-
-	//	persData, err := ReadPersistentState(wg)
-	//
-	//	if err != nil {
-	//		fmt.Println("Unable to read persistent state")
-	//		log.Fatal(err.Error())
-	//	} else {
-	//
-	//		// set variables CommitedIndex and VotedDor
-	//		VotedFor = persData.VotedFor
-	//		CurrentTerm = persData.CurrentTerm
-	//		CommitIndex = persData.CommitIndex
-	//	}
-
 	// Initialize server struct
 	// restore from persistent storage
 	f, err := os.OpenFile("raft.log", os.O_CREATE|os.O_RDWR, 0666)
@@ -114,6 +99,7 @@ func InitializeState(wg *sync.WaitGroup, ip string) {
 		CommitIndex: 0,
 		Term:        0,
 		VotedFor:    "",
+		Logs:        make([]Entry, 0),
 	}
 
 	Node = &node
@@ -407,38 +393,32 @@ func (s *Server) restore() {
 	// store Term
 	var preliminaryTerm int64 = 0
 	// Read the log entries and append to Server struct
+	strCommand := make([]string, 0)
+
 	for offset < size {
 		p, err := br.Read(log)
 
 		if err != nil {
 			fmt.Println("ERR: ", err)
 			panic("Unable to read log")
-		}
-		fmt.Printf("READ BYTES => %d\n", p)
+		} // Add log to struct
 
-		fmt.Printf("OFFSET => %d \n", offset)
-
-		// fmt.Println("RAW TERM => ", log[:8])
-		// fmt.Println("LITTLE ENDIAN TERM => ", binary.LittleEndian.Uint64(log[:8]))
-		// fmt.Println("LITTLE ENDIAN TERM FOR FIRST byte only => ", int(log[0]))
-
-		// Add log to struct
-		newEntry := Entry{
+		entr := Entry{
 			Term:    int64(binary.LittleEndian.Uint64(log[:8])),
 			Command: log[8:],
 		}
 
-		s.Logs = append(s.Logs, newEntry)
+		s.Logs = append(s.Logs, entr)
+		strCommand = append(strCommand, string(entr.Command))
 
 		// update Term
-		if newEntry.Term > int64(preliminaryTerm) {
-			preliminaryTerm = newEntry.Term
+		if entr.Term > int64(preliminaryTerm) {
+			preliminaryTerm = entr.Term
 		}
-
-		fmt.Printf("READ LOG TERM => %d LOG:=> %s\n", newEntry.Term, string(newEntry.Command), newEntry.Command)
 
 		if offset+int64(p) > size {
 			offset += size - offset
+			break
 		} else {
 			offset += int64(p)
 		}
@@ -450,9 +430,15 @@ func (s *Server) restore() {
 		// s.Fd.Seek(offset, 0)
 	}
 
+	for l := 0; l < len(strCommand); l++ {
+		s.Logs[l].Command = []byte(strCommand[l])
+	}
+
 	s.Term = preliminaryTerm
 
-	fmt.Println("FINAL RESTORED TERM => ", s.Term)
+	for j := 0; j < len(s.Logs); j++ {
+		fmt.Printf("%d -> %s\n", j, string(s.Logs[j].Command))
+	}
 }
 
 /*

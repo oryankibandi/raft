@@ -79,5 +79,4 @@ func main() {
 		// Serve request in goroutine
 		go rpc.ServeConn(conn)
 	}
-
 }
