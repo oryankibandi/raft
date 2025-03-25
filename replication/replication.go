@@ -192,7 +192,7 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byt
 		*succResponses += 1
 		mu.Unlock()
 
-		go membership.ClusterMembers.IncrementNodeNextIndex(serverAddr, uint(len(entries)))
+		membership.ClusterMembers.IncrementNodeNextIndex(serverAddr, uint(len(entries)))
 
 		return
 	}
@@ -202,6 +202,18 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byt
 		fmt.Println("FOLLOWER LAST LOG INDEX DOES NOT MATCH ==>")
 		fmt.Printf("(%s) NEXTNODEINDEX BEFORE INCREMENTING -----------------------------> %d\n", addr, membership.ClusterMembers.Members[serverAddr])
 		// Reduce node nextIndex in state
+
+		// if follower is up to date, consider this as successful
+		if res.FollowerLastLogIndex == (len(state.Node.Logs) - 1) {
+			membership.ClusterMembers.SetNodeNextIndex(serverAddr, uint(res.FollowerLastLogIndex+1))
+
+			mu.Lock()
+			*succResponses += 1
+			mu.Unlock()
+
+			return
+		}
+
 		membership.ClusterMembers.SetNodeNextIndex(serverAddr, uint(res.FollowerLastLogIndex+1))
 
 		// Get logs from the new index onwards
@@ -265,7 +277,7 @@ func retryAppendEntriesRPC(entries [][]byte, addr string, client *rpc.Client, su
 		*succResponses += 1
 		mu.Unlock()
 
-		go membership.ClusterMembers.IncrementNodeNextIndex(address, uint(len(entries)))
+		membership.ClusterMembers.IncrementNodeNextIndex(address, uint(len(entries)))
 	}
 
 }
@@ -308,7 +320,9 @@ func (t *ReplicationRPC) AppendEntriesRPC(args *AppendEntriesArgs, appendRes *Ap
 			appendRes.Success = false
 			appendRes.FollowerLastLogIndex = max(lenOfLogs-1, 0)
 
+			return nil
 		}
+
 		appendRes.Success = false
 
 		return nil

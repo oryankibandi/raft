@@ -97,7 +97,7 @@ func InitializeState(wg *sync.WaitGroup, ip string) {
 		Role:        FOLLOWER,
 		Ip:          ip,
 		CommitIndex: 0,
-		Term:        0,
+		Term:        1,
 		VotedFor:    "",
 		Logs:        make([]Entry, 0),
 	}
