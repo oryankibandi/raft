@@ -62,6 +62,9 @@ func (t *ClientRPC) ClientReplicationRequest(args ClientRequestRPC, clientRes *C
 		return nil
 	}
 
+	// Add entries to state machine
+	state.Node.ApplyToStateMachine(uint(len(args.Entries)), nil)
+
 	clientRes.Success = true
 
 	return nil

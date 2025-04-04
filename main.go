@@ -10,6 +10,7 @@ import (
 
 	"raft/client"
 	"raft/election"
+	kvstore "raft/kv_store"
 	"raft/replication"
 	"raft/state"
 )
@@ -27,8 +28,8 @@ var Wg sync.WaitGroup
 func main() {
 
 	// set address
-	if len(os.Args) < 2 {
-		log.Fatal("Please provide server address")
+	if len(os.Args) < 3 {
+		log.Fatal("Please provide server address and key value store api address")
 		return
 	}
 
@@ -65,7 +66,13 @@ func main() {
 
 	defer listener.Close()
 
+	// Initialize key value store
+	kvstore.InitiateKVState()
+
+	go kvstore.InitializeApi(os.Args[2])
+
 	fmt.Printf("Listening on port %s\n\n", os.Args[1])
+
 	for {
 
 		conn, err := listener.Accept()

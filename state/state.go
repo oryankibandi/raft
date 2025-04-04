@@ -2,20 +2,29 @@ package state
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"raft/membership"
 	"raft/utils"
 	"sync"
+
+	kvstore "raft/kv_store"
 )
 
 type PersistentState struct {
 	CurrentTerm int    `json:"currentTerm"`
 	VotedFor    string `json:"votedFor"`
 	CommitIndex int    `json:"commitIndex"`
+}
+
+type StateMachinePayload struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 const (
@@ -552,4 +561,45 @@ func (s *Server) UpdateServerState(newState NodeRole) {
 		go membership.InitializeClusterMembers(uint(len(s.Logs)))
 	}
 
+}
+
+/**
+* Applies logs  to state machine and updates commit index
+ */
+func (s *Server) ApplyToStateMachine(numOfEntries uint, newCommitIndex *int) (err error, applied bool) {
+	// Update commit Index
+	if newCommitIndex != nil {
+		s.CommitIndex = int64(*newCommitIndex)
+	} else {
+		s.CommitIndex = int64(len(s.Logs))
+	}
+
+	s.Persist(int(numOfEntries), true, false)
+
+	// Get uncommitted Logs
+	l := make([]Entry, 0)
+	byteEntr := make([][]byte, 0)
+
+	if len(s.Logs) > 0 {
+		l = s.Logs[(len(s.Logs) - int(numOfEntries)):]
+	}
+
+	for _, v := range l {
+		byteEntr = append(byteEntr, v.Command)
+	}
+
+	url := fmt.Sprintf("http://127.0.0.1:%s", kvstore.KVServ.Port)
+	for _, entry := range byteEntr {
+		// send http request to key-val store
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(entry))
+		if err != nil {
+			fmt.Printf("Request failed: %v\n", err)
+
+			return err, false
+		}
+
+		fmt.Println("RESP => ", resp)
+	}
+
+	return nil, true
 }

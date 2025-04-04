@@ -351,6 +351,8 @@ func (t *ReplicationRPC) AppendEntriesRPC(args *AppendEntriesArgs, appendRes *Ap
 	// err, _ := state.WriteToLogs(args.Entries)
 	state.Node.AddEntries(args.Term, args.PrevLogIndex, args.Entries, args.LeaderCommitIndex)
 
+	state.Node.ApplyToStateMachine(uint(len(args.Entries)), &args.LeaderCommitIndex)
+
 	appendRes.Success = true
 	appendRes.FollowerLastLogIndex = -1
 	return nil
