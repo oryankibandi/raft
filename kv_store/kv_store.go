@@ -13,6 +13,8 @@ import (
 type kvStore struct {
 	data *sync.Map
 	Fd   *os.File
+	wg   *sync.WaitGroup
+	mu   sync.Mutex
 }
 
 type Entry struct {
@@ -25,8 +27,6 @@ type ReaderCloser struct {
 }
 
 var Entries kvStore
-
-var m sync.Map
 
 func (r *kvStore) readFromPersistentState() (d []byte) {
 	n, err := os.ReadFile("kv_store.json")
@@ -42,15 +42,31 @@ func (r *kvStore) readFromPersistentState() (d []byte) {
 	return n
 }
 
-func (s *kvStore) StoreVals(v Entry) (err error) {
-	if v.Key == "" || v.Value == "" {
-		fmt.Println("Entry is missing key or value")
-		return errors.New("Entry is missing key or value")
+func (s *kvStore) storeSingleEntry(k string, v string) {
+	defer s.wg.Done()
+	s.data.Store(k, v)
+}
+
+func (s *kvStore) StoreVals(v []Entry) (err error) {
+	fmt.Println("(store) LENGTH OF NEW VAlS => ", len(v))
+	if len(v) <= 0 {
+		return nil
 	}
 
-	s.data.Store(v.Key, v.Value)
+	for _, v := range v {
+		if v.Key == "" || v.Value == "" {
+			fmt.Println("Entry is missing key or value")
+			return errors.New("Entry is missing key or value")
+		}
 
+		s.wg.Add(1)
+		go s.storeSingleEntry(v.Key, v.Value)
+
+	}
+
+	s.wg.Wait()
 	go s.persistVals()
+
 	return nil
 }
 
@@ -74,6 +90,9 @@ func (s *kvStore) GetVal(k string) (err error, value *Entry) {
 }
 
 func (s *kvStore) persistVals() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	normalMap := make(map[string]string)
 
 	s.data.Range(func(key, value any) bool {
@@ -91,7 +110,7 @@ func (s *kvStore) persistVals() {
 
 	}
 
-	// Move cursor to the beginning of the file to overwrite existing content
+	// Set  offset to the beginning of the file to overwrite existing content
 	_, err = s.Fd.Seek(0, 0)
 	if err != nil {
 		fmt.Println("Error seeking file:", err)
@@ -103,15 +122,30 @@ func (s *kvStore) persistVals() {
 	if err != nil {
 		fmt.Println("ERR => ", err)
 		log.Fatal("Unable to write to persistent state")
+
+		return
 	}
+
+	// truncate file to remove invalid characters
+	fmt.Println("TRUNCATING LENGTH => ", len(jsonData))
+	err = s.Fd.Truncate(int64(len(jsonData)))
+
+	if err != nil {
+		fmt.Println("Unable to truncate kv_store file: ", err)
+
+		return
+	}
+
+	return
 }
 
 func InitiateKVState() {
 	f, err := os.OpenFile("kv_store.json", os.O_CREATE|os.O_RDWR, 0644)
 
 	Entries = kvStore{
-		data: &m,
 		Fd:   f,
+		wg:   &sync.WaitGroup{},
+		data: &sync.Map{},
 	}
 
 	k := make([]byte, 0)
@@ -136,13 +170,16 @@ func InitiateKVState() {
 
 		fmt.Println("JSON ==> ", data)
 
+		entries := make([]Entry, 0)
 		for k, v := range data {
 			entr := Entry{
 				Key:   k,
 				Value: v,
 			}
 
-			Entries.StoreVals(entr)
+			entries = append(entries, entr)
 		}
+
+		Entries.StoreVals(entries)
 	}
 }

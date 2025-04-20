@@ -280,6 +280,8 @@ func retryAppendEntriesRPC(entries [][]byte, addr string, client *rpc.Client, su
 		membership.ClusterMembers.IncrementNodeNextIndex(address, uint(len(entries)))
 	}
 
+	return
+
 }
 
 /**
@@ -293,37 +295,7 @@ func (t *ReplicationRPC) AppendEntriesRPC(args *AppendEntriesArgs, appendRes *Ap
 	if args.Term < int(state.Node.Term) {
 		fmt.Println("LEADER TERM IS LESS THAN MY TERM...")
 		appendRes.Success = false
-
-		return nil
-	}
-
-	// Log Matching check
-	if args.PrevLogIndex > 0 && (lenOfLogs-1 < args.PrevLogIndex || state.Node.Logs[args.PrevLogIndex].Term != int64(args.PrevLogTerm)) {
-		fmt.Println("ENTRY AT PREVLOGINDEX DOES NOT MATCH...")
-		fmt.Printf("PREVLOGINDEX: => %d \t\t LOGLEN => %d\n", args.PrevLogIndex, lenOfLogs)
-
-		if args.PrevLogIndex > lenOfLogs-1 {
-			// Missing data. This follower is not up to date
-			// Send back last log Index
-			appendRes.FollowerLastLogIndex = max(lenOfLogs-1, 0)
-
-			appendRes.Success = false
-			return nil
-		}
-
-		if lenOfLogs-1 > args.PrevLogIndex {
-			fmt.Printf("LASTLOGTERM => %d \t\t LEADERLASTLOGTERM => %d\n", state.Node.Logs[args.PrevLogIndex].Term, args.PrevLogTerm)
-
-			fmt.Println("CONFLICTING ENTRY => ", state.Node.Logs[args.PrevLogIndex])
-
-			// panic("CONFLICTING ENTRIES")
-			appendRes.Success = false
-			appendRes.FollowerLastLogIndex = max(lenOfLogs-1, 0)
-
-			return nil
-		}
-
-		appendRes.Success = false
+		appendRes.FollowerLastLogIndex = -1
 
 		return nil
 	}
@@ -337,7 +309,47 @@ func (t *ReplicationRPC) AppendEntriesRPC(args *AppendEntriesArgs, appendRes *Ap
 		}
 	}
 
-	timeouts.ResetElectionTimer()
+	// Log Matching check
+	if args.PrevLogIndex > 0 && (lenOfLogs-1 < args.PrevLogIndex || state.Node.Logs[args.PrevLogIndex].Term != int64(args.PrevLogTerm)) {
+		fmt.Println("ENTRY AT PREVLOGINDEX DOES NOT MATCH...")
+		fmt.Printf("PREVLOGINDEX: => %d \t\t LOGLEN => %d\n", args.PrevLogIndex, lenOfLogs)
+
+		if args.PrevLogIndex > lenOfLogs-1 {
+			// Missing entries. This follower is not up to date
+			// Send back last log Index
+			appendRes.FollowerLastLogIndex = max(lenOfLogs-1, 0)
+
+			appendRes.Success = false
+			return nil
+		}
+
+		if lenOfLogs-1 > args.PrevLogIndex {
+			fmt.Printf("LASTLOGTERM => %d \t\t LEADERLASTLOGTERM => %d\n", state.Node.Logs[args.PrevLogIndex].Term, args.PrevLogTerm)
+
+			fmt.Println("CONFLICTING ENTRY => ", state.Node.Logs[args.PrevLogIndex])
+
+			// panic("CONFLICTING ENTRIES")
+			// Follower should not have more entries than leader.
+			// Delete entriesfrom volatile and persisten state
+			err, newLen := state.Node.DeleteConfictingLogs(uint(args.PrevLogIndex + 1))
+
+			if err != nil {
+				fmt.Println("ERR => ", err)
+				log.Panic("unable to delete conflicting logs")
+			}
+
+			appendRes.Success = false
+			appendRes.FollowerLastLogIndex = max(newLen, 0)
+
+			return nil
+		}
+
+		appendRes.Success = false
+
+		return nil
+	}
+
+	timeouts.RaftTimeouts.ResetElectionTimer()
 	appendRes.Term = int(state.Node.Term)
 
 	if len(args.Entries) <= 0 {

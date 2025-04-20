@@ -36,9 +36,11 @@ var mu sync.Mutex
  */
 func InitElectionFlow() {
 	fmt.Println("Initializing election flow...")
+	timeouts.RaftTimeouts = timeouts.Timers{}
+
 	electionTimeoutChann := make(chan bool)
 
-	go timeouts.StartElectionTimeout(electionTimeoutChann)
+	go timeouts.RaftTimeouts.StartElectionTimeout(electionTimeoutChann)
 
 	for {
 		select {
@@ -103,9 +105,9 @@ func StartElection() {
 
 	if votes >= int(math.Round(result)) && votes%2 != 0 {
 		state.Node.UpdateServerState(state.LEADER)
-		timeouts.CancelElectionTimer()
+		timeouts.RaftTimeouts.CancelElectionTimer()
 		// save term
-		go state.Node.Persist(0, true, false)
+		go state.Node.Persist(0, true, false, nil)
 		go initLeaderFlow()
 	} else {
 		state.Node.DecrementTerm()
@@ -155,8 +157,6 @@ func requestVote(serverAddr string, votes *int) {
 		return
 	}
 
-	// Mock fxn to grant or deny vote. Ideally should do a consistency check
-
 	if res.VoteGranted {
 		mu.Lock()
 		*votes += 1
@@ -172,7 +172,7 @@ func (t *ElectionRPC) RequestVoteRPC(args *RequestVoteArgs, reqVoteRes *RequestV
 	}
 
 	if args.LastLogIndex >= len(state.Node.Logs)-1 {
-		timeouts.ResetElectionTimer()
+		timeouts.RaftTimeouts.ResetElectionTimer()
 		reqVoteRes.VoteGranted = true
 		state.Node.SetVotedFor(args.CandidateId)
 
@@ -213,7 +213,7 @@ func initLeaderFlow() {
 			// reset election timer handler
 		case k := <-resetElecChan:
 			if k {
-				timeouts.ResetElectionTimer()
+				timeouts.RaftTimeouts.ResetElectionTimer()
 			}
 		default:
 			continue

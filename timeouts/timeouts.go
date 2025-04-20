@@ -7,25 +7,31 @@ import (
 	"raft/utils"
 )
 
-var electionTimeoutTicker *time.Ticker
+type Timers struct {
+	ElectionTimer *time.Ticker
+}
+
+var RaftTimeouts Timers
 
 /**
 * Starts a timeout after which, the server converts to candidate and sends RequestVoteRPC
  */
-func StartElectionTimeout(reset chan bool) {
-	electionTimeoutTicker = time.NewTicker(time.Second * time.Duration(utils.GenerateElectionTimeoutDuration()))
+func (t *Timers) StartElectionTimeout(reset chan bool) {
+	if t.ElectionTimer == nil {
+		t.ElectionTimer = time.NewTicker(time.Second * time.Duration(utils.GenerateElectionTimeoutDuration()))
+	}
 
 	for {
 		select {
 		case l := <-reset:
-			if l && electionTimeoutTicker != nil {
+			if l && t.ElectionTimer != nil {
 				fmt.Println("Resetting election ticker...")
-				electionTimeoutTicker.Reset(time.Second * time.Duration(utils.GenerateElectionTimeoutDuration()))
+				t.ElectionTimer.Reset(time.Second * time.Duration(utils.GenerateElectionTimeoutDuration()))
 			}
-		case <-electionTimeoutTicker.C:
+		case <-t.ElectionTimer.C:
 			fmt.Printf("Election timout reached...\n")
-			if electionTimeoutTicker != nil {
-				electionTimeoutTicker.Stop()
+			if t.ElectionTimer != nil {
+				t.ElectionTimer.Stop()
 			}
 			reset <- true
 			break
@@ -36,19 +42,19 @@ func StartElectionTimeout(reset chan bool) {
 /**
 * Resets election timer after receiving a heartbeat request from leader
  */
-func ResetElectionTimer() {
+func (t *Timers) ResetElectionTimer() {
 	fmt.Println("Resetting election timer...")
-	if electionTimeoutTicker != nil {
-		electionTimeoutTicker.Reset(time.Second * time.Duration(utils.GenerateElectionTimeoutDuration()))
+	if t.ElectionTimer != nil {
+		t.ElectionTimer.Reset(time.Second * time.Duration(utils.GenerateElectionTimeoutDuration()))
 	}
 }
 
 /*
 * Cancels the election timer. This probably happens when the server is a leader
  */
-func CancelElectionTimer() {
-	if electionTimeoutTicker != nil {
-		electionTimeoutTicker.Stop()
-		electionTimeoutTicker = nil
+func (t *Timers) CancelElectionTimer() {
+	if t.ElectionTimer != nil {
+		t.ElectionTimer.Stop()
+		t.ElectionTimer = nil
 	}
 }

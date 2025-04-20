@@ -14,9 +14,13 @@ type KVServer struct {
 	Port string
 }
 
-type EntryReqBody struct {
+type ReqEntry struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
+}
+
+type ReqEntries struct {
+	Entries []ReqEntry `json:"entries"`
 }
 
 type GetValueReqBody struct {
@@ -47,26 +51,35 @@ func handleAddKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var newData EntryReqBody
+	var payload ReqEntries
 
-	err := json.NewDecoder(r.Body).Decode(&newData)
+	err := json.NewDecoder(r.Body).Decode(&payload)
 
 	if err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	newEntry := Entry{
-		Key:   newData.Key,
-		Value: newData.Value,
+	newEntries := make([]Entry, 0)
+	for _, v := range payload.Entries {
+
+		newEntry := Entry{
+			Key:   v.Key,
+			Value: v.Value,
+		}
+
+		newEntries = append(newEntries, newEntry)
 	}
 
-	Entries.StoreVals(newEntry)
+	fmt.Println("(store) NEW ENTRIES => ", newEntries)
+
+	Entries.StoreVals(newEntries)
+
 	// Set Content-Type header
 	w.Header().Set("Content-Type", "application/json")
 
 	// Encode struct to JSON and write response
-	json.NewEncoder(w).Encode(newData)
+	json.NewEncoder(w).Encode(newEntries)
 
 	return
 }
