@@ -188,6 +188,8 @@ func (s *Server) AddEntries(term int, prevLogIndex int, command [][]byte, leader
 
 	for idx, comm := range command {
 		fmt.Printf("COMMAND TO ADD => %s\n", comm)
+		n := bytes.TrimRight(comm, "\x00")
+		comm = bytes.TrimLeft(n, "\x00")
 		if len(s.Logs) > 0 && s.entryExists(prevLogIndex+1+idx) {
 			fmt.Println("ENTRY EXISTS ==> ")
 			fmt.Printf("EXISTING ENTry AT IDX: %d  =>  %s\n", prevLogIndex+1+idx, s.Logs[prevLogIndex+1+idx])
