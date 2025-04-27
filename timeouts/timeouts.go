@@ -13,6 +13,12 @@ type Timers struct {
 
 var RaftTimeouts Timers
 
+func init() {
+	RaftTimeouts = Timers{
+		ElectionTimer: time.NewTicker(time.Second * time.Duration(utils.GenerateElectionTimeoutDuration())),
+	}
+}
+
 /**
 * Starts a timeout after which, the server converts to candidate and sends RequestVoteRPC
  */

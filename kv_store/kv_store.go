@@ -139,7 +139,10 @@ func (s *kvStore) persistVals() {
 	return
 }
 
-func InitiateKVState() {
+/*
+Initialize kv state
+*/
+func init() {
 	f, err := os.OpenFile("kv_store.json", os.O_CREATE|os.O_RDWR, 0644)
 
 	Entries = kvStore{

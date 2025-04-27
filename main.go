@@ -28,20 +28,12 @@ var CurrentTerm int = 0
 var VotedFor string
 var Wg sync.WaitGroup
 
-func main() {
-
-	// set address
+func init() {
 	if len(os.Args) < 3 {
 		log.Fatal("Please provide server address and key value store api address")
 		return
 	}
 
-	formattedAddr := fmt.Sprintf("localhost%s", os.Args[1])
-	fmt.Println("ADDR => ", formattedAddr)
-	// commitedIndex := 0
-	// lastApplied := 0
-
-	// Read persistent state for current term and Voted for values
 	Wg.Add(1)
 	go state.InitializeState(&Wg, os.Args[1])
 	Wg.Wait()
@@ -49,6 +41,12 @@ func main() {
 	// Initialize election timeout
 	go election.InitElectionFlow()
 
+}
+
+func main() {
+
+	formattedAddr := fmt.Sprintf("localhost%s", os.Args[1])
+	fmt.Println("ADDR => ", formattedAddr)
 	// open RPC connections
 	election := new(election.ElectionRPC)
 	replicationRPC := new(replication.ReplicationRPC)
@@ -73,7 +71,7 @@ func main() {
 	// defer listener.Close()
 
 	// Initialize key value store
-	kvstore.InitiateKVState()
+	// kvstore.InitiateKVState()
 
 	go kvstore.InitializeApi(os.Args[2])
 
