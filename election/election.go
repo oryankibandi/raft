@@ -88,7 +88,7 @@ func StartElection() {
 	state.Node.UpdateServerState(state.CANDIDATE)
 
 	voteForSelf(&votes)
-	members := membership.GetClusterMembers()
+	members := membership.ClusterMembers.GetClusterMembers()
 
 	// loop through members and send requests in parallel
 	for _, mem := range members {

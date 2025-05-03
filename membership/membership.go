@@ -19,10 +19,27 @@ type ClusterMemberStruct struct {
 
 var ClusterMembers *ClusterMemberStruct
 
+func init() {
+	members := readClusterMembers()
+
+	initializedMembers := make(map[string]uint)
+
+	for _, v := range members {
+		initializedMembers[v] = 0
+	}
+
+	ClusterMembers = &ClusterMemberStruct{
+		Members: initializedMembers,
+		Mu:      sync.Mutex{},
+	}
+
+	// ClusterMembers = &mems
+}
+
 /**
 * Retrieves cluster member  IPs and ports stored in a config file
  */
-func GetClusterMembers() []string {
+func readClusterMembers() []string {
 	var members Members
 
 	f, err := os.OpenFile("members.json", os.O_RDONLY, 0644)
@@ -39,21 +56,25 @@ func GetClusterMembers() []string {
 	return members.Members
 }
 
-func InitializeClusterMembers(nextIndex uint) {
-	members := GetClusterMembers()
-
-	initializedMembers := make(map[string]uint)
-
-	for _, v := range members {
-		initializedMembers[v] = nextIndex
+func (m *ClusterMemberStruct) GetClusterMembers() []string {
+	mems := make([]string, 0, len(m.Members))
+	if len(m.Members) <= 0 {
+		return make([]string, 0)
 	}
 
-	mems := ClusterMemberStruct{
-		Members: initializedMembers,
-		Mu:      sync.Mutex{},
+	for k, _ := range m.Members {
+		mems = append(mems, k)
 	}
 
-	ClusterMembers = &mems
+	return mems
+}
+
+func (m *ClusterMemberStruct) UpdateClusterMembers(nextIndex uint) {
+	for k, _ := range m.Members {
+		m.Members[k] = nextIndex
+	}
+
+	return
 }
 
 func (m *ClusterMemberStruct) IncrementNodeNextIndex(address string, newEntryCount uint, currLogLen int) {

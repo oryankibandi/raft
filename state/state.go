@@ -67,32 +67,32 @@ type Server struct {
 /**
 *  Scan the log and get the index of last log entry
  */
-func getLogIndex() {
-	var logIdx int = 0
-
-	f, err := os.OpenFile("raft.log", os.O_CREATE|os.O_RDONLY, 0644)
-
-	if err != nil {
-		log.Printf("Unable to open file => ")
-		fmt.Println(err.Error())
-		return
-	}
-
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-
-	for scanner.Scan() {
-		logIdx++
-	}
-
-	fmt.Println("LogIndex => ", logIdx)
-
-	if logIdx-1 >= 0 {
-		LogIndex = logIdx - 1
-	} else {
-		LogIndex = logIdx
-	}
-}
+// func getLogIndex() {
+// 	var logIdx int = 0
+//
+// 	f, err := os.OpenFile("raft.log", os.O_CREATE|os.O_RDONLY, 0644)
+//
+// 	if err != nil {
+// 		log.Printf("Unable to open file => ")
+// 		fmt.Println(err.Error())
+// 		return
+// 	}
+//
+// 	defer f.Close()
+// 	scanner := bufio.NewScanner(f)
+//
+// 	for scanner.Scan() {
+// 		logIdx++
+// 	}
+//
+// 	fmt.Println("LogIndex => ", logIdx)
+//
+// 	if logIdx-1 >= 0 {
+// 		LogIndex = logIdx - 1
+// 	} else {
+// 		LogIndex = logIdx
+// 	}
+// }
 
 func InitializeState(wg *sync.WaitGroup, ip string) {
 	defer wg.Done()
@@ -590,9 +590,8 @@ func (s *Server) UpdateServerState(newState NodeRole) {
 		s.VotedFor = ""
 		//s.Persist(0, true, false)
 	} else if newState == LEADER {
-		go membership.InitializeClusterMembers(uint(len(s.Logs)))
+		go membership.ClusterMembers.UpdateClusterMembers(uint(len(s.Logs)))
 	}
-
 }
 
 /**

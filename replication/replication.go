@@ -70,7 +70,7 @@ func StartHeartbeatTimer(revert *chan bool, resetElecTimerChan *chan bool) {
 }
 
 func disperseHeartbeatRequests() {
-	members := membership.GetClusterMembers()
+	members := membership.ClusterMembers.GetClusterMembers()
 
 	responses := 0
 	// loop through members and send heartbeat requests in parallel
@@ -95,7 +95,7 @@ func disperseHeartbeatRequests() {
 * Replicates logs across followers
 **/
 func ReplicateLogs() (err error) {
-	members := membership.GetClusterMembers()
+	members := membership.ClusterMembers.GetClusterMembers()
 
 	responses := 0
 	// loop through members and send heartbeat requests in parallel
@@ -234,6 +234,9 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byt
 
 		return
 	}
+
+	// if another error occured, retry indefinitely
+
 }
 
 func retryAppendEntriesRPC(entries [][]byte, addr string, client *rpc.Client, succResponses *int) {
