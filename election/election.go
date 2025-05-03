@@ -36,9 +36,11 @@ var mu sync.Mutex
  */
 func InitElectionFlow() {
 	fmt.Println("Initializing election flow...")
+	timeouts.RaftTimeouts = timeouts.Timers{}
+
 	electionTimeoutChann := make(chan bool)
 
-	go timeouts.StartElectionTimeout(electionTimeoutChann)
+	go timeouts.RaftTimeouts.StartElectionTimeout(electionTimeoutChann)
 
 	for {
 		select {
@@ -86,7 +88,7 @@ func StartElection() {
 	state.Node.UpdateServerState(state.CANDIDATE)
 
 	voteForSelf(&votes)
-	members := membership.GetClusterMembers()
+	members := membership.ClusterMembers.GetClusterMembers()
 
 	// loop through members and send requests in parallel
 	for _, mem := range members {
@@ -101,11 +103,11 @@ func StartElection() {
 
 	var result float64 = float64(len(members)) / float64(2)
 
-	if votes >= int(math.Round(result)) {
+	if votes >= int(math.Round(result)) && votes%2 != 0 {
 		state.Node.UpdateServerState(state.LEADER)
-		timeouts.CancelElectionTimer()
+		timeouts.RaftTimeouts.CancelElectionTimer()
 		// save term
-		go state.Node.Persist(0, true, false)
+		go state.Node.Persist(0, true, false, nil)
 		go initLeaderFlow()
 	} else {
 		state.Node.DecrementTerm()
@@ -139,7 +141,13 @@ func requestVote(serverAddr string, votes *int) {
 
 	fmt.Println("Sending RequestVoteRPC to ADDR: ", serverAddr)
 
-	args := &RequestVoteArgs{Term: int(state.Node.Term), CandidateId: state.Node.Id, LastLogIndex: int(state.Node.CommitIndex), LastLogTerm: state.Node.GetLastLogTerm(0)}
+	args := &RequestVoteArgs{
+		Term:         int(state.Node.Term),
+		CandidateId:  state.Node.Id,
+		LastLogIndex: len(state.Node.Logs),
+		LastLogTerm:  state.Node.GetLastLogTerm(0),
+	}
+
 	res := &RequestVoteResponse{}
 
 	err = client.Call("ElectionRPC.RequestVoteRPC", args, &res)
@@ -148,8 +156,6 @@ func requestVote(serverAddr string, votes *int) {
 		log.Println("Unable to send RequestVoteRPC: ", err)
 		return
 	}
-
-	// Mock fxn to grant or deny vote. Ideally should do a consistency check
 
 	if res.VoteGranted {
 		mu.Lock()
@@ -165,8 +171,8 @@ func (t *ElectionRPC) RequestVoteRPC(args *RequestVoteArgs, reqVoteRes *RequestV
 		return nil
 	}
 
-	if args.LastLogIndex >= int(state.Node.CommitIndex) {
-		timeouts.ResetElectionTimer()
+	if args.LastLogIndex >= len(state.Node.Logs)-1 {
+		timeouts.RaftTimeouts.ResetElectionTimer()
 		reqVoteRes.VoteGranted = true
 		state.Node.SetVotedFor(args.CandidateId)
 
@@ -207,7 +213,7 @@ func initLeaderFlow() {
 			// reset election timer handler
 		case k := <-resetElecChan:
 			if k {
-				timeouts.ResetElectionTimer()
+				timeouts.RaftTimeouts.ResetElectionTimer()
 			}
 		default:
 			continue

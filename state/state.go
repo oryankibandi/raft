@@ -2,19 +2,34 @@ package state
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"raft/membership"
-	"raft/utils"
 	"sync"
+
+	kvstore "raft/kv_store"
 )
 
 type PersistentState struct {
 	CurrentTerm int    `json:"currentTerm"`
 	VotedFor    string `json:"votedFor"`
 	CommitIndex int    `json:"commitIndex"`
+}
+
+type StateMachineEntry struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+type StateMachinePayload struct {
+	Entries []StateMachineEntry `json:"entries"`
 }
 
 const (
@@ -52,50 +67,35 @@ type Server struct {
 /**
 *  Scan the log and get the index of last log entry
  */
-func getLogIndex() {
-	var logIdx int = 0
-
-	f, err := os.OpenFile("raft.log", os.O_CREATE|os.O_RDONLY, 0644)
-
-	if err != nil {
-		log.Printf("Unable to open file => ")
-		fmt.Println(err.Error())
-		return
-	}
-
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-
-	for scanner.Scan() {
-		logIdx++
-	}
-
-	fmt.Println("LogIndex => ", logIdx)
-
-	if logIdx-1 >= 0 {
-		LogIndex = logIdx - 1
-	} else {
-		LogIndex = logIdx
-	}
-}
+// func getLogIndex() {
+// 	var logIdx int = 0
+//
+// 	f, err := os.OpenFile("raft.log", os.O_CREATE|os.O_RDONLY, 0644)
+//
+// 	if err != nil {
+// 		log.Printf("Unable to open file => ")
+// 		fmt.Println(err.Error())
+// 		return
+// 	}
+//
+// 	defer f.Close()
+// 	scanner := bufio.NewScanner(f)
+//
+// 	for scanner.Scan() {
+// 		logIdx++
+// 	}
+//
+// 	fmt.Println("LogIndex => ", logIdx)
+//
+// 	if logIdx-1 >= 0 {
+// 		LogIndex = logIdx - 1
+// 	} else {
+// 		LogIndex = logIdx
+// 	}
+// }
 
 func InitializeState(wg *sync.WaitGroup, ip string) {
 	defer wg.Done()
-	//	go getLogIndex()
-
-	//	persData, err := ReadPersistentState(wg)
-	//
-	//	if err != nil {
-	//		fmt.Println("Unable to read persistent state")
-	//		log.Fatal(err.Error())
-	//	} else {
-	//
-	//		// set variables CommitedIndex and VotedDor
-	//		VotedFor = persData.VotedFor
-	//		CurrentTerm = persData.CurrentTerm
-	//		CommitIndex = persData.CommitIndex
-	//	}
-
 	// Initialize server struct
 	// restore from persistent storage
 	f, err := os.OpenFile("raft.log", os.O_CREATE|os.O_RDWR, 0666)
@@ -106,13 +106,14 @@ func InitializeState(wg *sync.WaitGroup, ip string) {
 	}
 
 	node := Server{
-		Id:          utils.RandomString(8),
+		Id:          ip,
 		Fd:          f,
 		Role:        FOLLOWER,
 		Ip:          ip,
 		CommitIndex: 0,
-		Term:        0,
+		Term:        1,
 		VotedFor:    "",
+		Logs:        make([]Entry, 0),
 	}
 
 	Node = &node
@@ -123,8 +124,7 @@ func InitializeState(wg *sync.WaitGroup, ip string) {
 
 func (s *Server) AppendLeaderEntry(entries [][]byte) (err error) {
 	fmt.Println("APPEDNING ELADER ENTRY ...")
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
+	var newLogs []Entry
 
 	for _, entry := range entries {
 		n := Entry{
@@ -132,17 +132,44 @@ func (s *Server) AppendLeaderEntry(entries [][]byte) (err error) {
 			Command: entry,
 		}
 
-		s.Logs = append(s.Logs, n)
+		newLogs = append(newLogs, n)
 	}
 
+	s.Mu.Lock()
+	s.Logs = append(s.Logs, newLogs...)
+	s.Mu.Unlock()
+
 	// Persist
-	err, _ = s.Persist(len(entries), false, false)
+	err, _ = s.Persist(len(entries), false, false, nil)
 
 	if err != nil {
-		return err
+		return nil
 	}
 
 	return nil
+}
+
+/*
+Retrieves unreplicated logs for a speciic follower
+*/
+func (s *Server) GetUnreplicatedLogs(addr string) (err error, logs [][]byte) {
+	if addr == "" {
+		return errors.New("Address is required"), nil
+	}
+
+	unreplicatedLogs := s.Logs[int(membership.ClusterMembers.Members[addr]):]
+
+	if len(unreplicatedLogs) <= 0 {
+		return nil, make([][]byte, 0)
+	}
+
+	logsInBytes := make([][]byte, 0)
+
+	for _, v := range unreplicatedLogs {
+		logsInBytes = append(logsInBytes, v.Command)
+	}
+
+	return nil, logsInBytes
 }
 
 /**
@@ -160,8 +187,12 @@ func (s *Server) AddEntries(term int, prevLogIndex int, command [][]byte, leader
 	}
 
 	for idx, comm := range command {
+		fmt.Printf("COMMAND TO ADD => %s\n", comm)
+		n := bytes.TrimRight(comm, "\x00")
+		comm = bytes.TrimLeft(n, "\x00")
 		if len(s.Logs) > 0 && s.entryExists(prevLogIndex+1+idx) {
 			fmt.Println("ENTRY EXISTS ==> ")
+			fmt.Printf("EXISTING ENTry AT IDX: %d  =>  %s\n", prevLogIndex+1+idx, s.Logs[prevLogIndex+1+idx])
 
 			if s.entryConflicts(term, prevLogIndex+1+idx) {
 				fmt.Println("ENTRY CONFLICTS =>")
@@ -197,7 +228,7 @@ func (s *Server) AddEntries(term int, prevLogIndex int, command [][]byte, leader
 		}
 	}
 
-	return s.Persist(entriesAdded, updatedMetadata, overwrittenLogs)
+	return s.Persist(entriesAdded, updatedMetadata, overwrittenLogs, nil)
 }
 
 /*
@@ -223,7 +254,7 @@ func (s *Server) clearConflictingEntries(index int) {
 /*
 Stores Node details (logs, currentTerm, VotedFor) in persistent storage
 */
-func (s *Server) Persist(numOfEntries int, updateMetadata bool, truncate bool) (err error, n int) {
+func (s *Server) Persist(numOfEntries int, updateMetadata bool, truncate bool, appendToLog *bool) (err error, n int) {
 
 	fmt.Println("LENGTH OF ENTRIES TO PERSIST ==================> ", numOfEntries)
 	// offset af which we begin writing the new logs, should replace existing logs from that offset if any
@@ -264,26 +295,28 @@ func (s *Server) Persist(numOfEntries int, updateMetadata bool, truncate bool) (
 		}
 	}
 
-	// Get file size
-	fileStat, err := s.Fd.Stat()
+	if (appendToLog != nil && *appendToLog) || appendToLog == nil {
+		// Get file size
+		fileStat, err := s.Fd.Stat()
 
-	if err != nil {
-		fmt.Println("ERR => ", err)
-		panic("Unable to get file stats")
+		if err != nil {
+			fmt.Println("ERR => ", err)
+			panic("Unable to get file stats")
+		}
+
+		size := fileStat.Size()
+
+		// set offset to end of logs to append logs
+		// First 16 bytes CommitIndex and VotedFor
+		// From 16 - N bytes contains Logs
+		offs, err := s.Fd.Seek(size, 0)
+
+		if err != nil {
+			fmt.Println("Offset ERR => ", err)
+		}
+
+		fmt.Println("OFFSET => ", offs)
 	}
-
-	size := fileStat.Size()
-
-	// set offset to end of logs to append logs
-	// First 16 bytes CommitIndex and VotedFor
-	// From 16 - N bytes contains Logs
-	offs, err := s.Fd.Seek(size, 0)
-
-	if err != nil {
-		fmt.Println("Offset ERR => ", err)
-	}
-
-	fmt.Println("OFFSET => ", offs)
 
 	// Get new logs added
 	var k []Entry
@@ -381,38 +414,32 @@ func (s *Server) restore() {
 	// store Term
 	var preliminaryTerm int64 = 0
 	// Read the log entries and append to Server struct
+	strCommand := make([]string, 0)
+
 	for offset < size {
 		p, err := br.Read(log)
 
 		if err != nil {
 			fmt.Println("ERR: ", err)
 			panic("Unable to read log")
-		}
-		fmt.Printf("READ BYTES => %d\n", p)
+		} // Add log to struct
 
-		fmt.Printf("OFFSET => %d \n", offset)
-
-		// fmt.Println("RAW TERM => ", log[:8])
-		// fmt.Println("LITTLE ENDIAN TERM => ", binary.LittleEndian.Uint64(log[:8]))
-		// fmt.Println("LITTLE ENDIAN TERM FOR FIRST byte only => ", int(log[0]))
-
-		// Add log to struct
-		newEntry := Entry{
+		entr := Entry{
 			Term:    int64(binary.LittleEndian.Uint64(log[:8])),
 			Command: log[8:],
 		}
 
-		s.Logs = append(s.Logs, newEntry)
+		s.Logs = append(s.Logs, entr)
+		strCommand = append(strCommand, string(entr.Command))
 
 		// update Term
-		if newEntry.Term > int64(preliminaryTerm) {
-			preliminaryTerm = newEntry.Term
+		if entr.Term > int64(preliminaryTerm) {
+			preliminaryTerm = entr.Term
 		}
-
-		fmt.Printf("READ LOG TERM => %d LOG:=> %s\n", newEntry.Term, string(newEntry.Command), newEntry.Command)
 
 		if offset+int64(p) > size {
 			offset += size - offset
+			break
 		} else {
 			offset += int64(p)
 		}
@@ -424,9 +451,35 @@ func (s *Server) restore() {
 		// s.Fd.Seek(offset, 0)
 	}
 
+	for l := 0; l < len(strCommand); l++ {
+		s.Logs[l].Command = []byte(strCommand[l])
+	}
+
 	s.Term = preliminaryTerm
 
-	fmt.Println("FINAL RESTORED TERM => ", s.Term)
+	for j := 0; j < len(s.Logs); j++ {
+		fmt.Printf("%d -> %s\n", j, string(s.Logs[j].Command))
+	}
+}
+
+/*
+Delete conflicting logs
+*/
+func (s *Server) DeleteConfictingLogs(conflictIndex uint) (err error, newLen int) {
+	if conflictIndex < 0 {
+		return errors.New("Conflict index must be a valid unsigned integer"), len(s.Logs)
+	}
+
+	if conflictIndex == 0 {
+		return nil, len(s.Logs)
+	}
+
+	s.Logs = s.Logs[:conflictIndex]
+
+	app := false
+	s.Persist(len(s.Logs), true, true, &app)
+
+	return nil, len(s.Logs)
 }
 
 /*
@@ -438,7 +491,7 @@ func (s *Server) SetVotedFor(serverId string) {
 	s.VotedFor = serverId
 	s.Mu.Unlock()
 
-	s.Persist(0, true, false)
+	s.Persist(0, true, false, nil)
 }
 
 /**
@@ -537,7 +590,87 @@ func (s *Server) UpdateServerState(newState NodeRole) {
 		s.VotedFor = ""
 		//s.Persist(0, true, false)
 	} else if newState == LEADER {
-		go membership.InitializeClusterMembers(uint(len(s.Logs)))
+		go membership.ClusterMembers.UpdateClusterMembers(uint(len(s.Logs)))
+	}
+}
+
+/**
+* Applies logs  to state machine and updates commit index
+ */
+func (s *Server) ApplyToStateMachine(numOfEntries uint, newCommitIndex *int) (err error, applied bool) {
+	// Update commit Index
+	if newCommitIndex != nil {
+		s.CommitIndex = int64(*newCommitIndex)
+	} else {
+		s.CommitIndex = int64(len(s.Logs))
 	}
 
+	s.Persist(0, true, false, nil)
+
+	// Get uncommitted Logs
+	l := make([]Entry, 0)
+	byteEntr := make([][]byte, 0)
+
+	payload := StateMachinePayload{
+		Entries: make([]StateMachineEntry, 0),
+	}
+
+	if len(s.Logs) > 0 {
+		l = s.Logs[(len(s.Logs) - int(numOfEntries)):]
+	}
+
+	for _, v := range l {
+		byteEntr = append(byteEntr, v.Command)
+
+		p := StateMachineEntry{}
+		fmt.Println("RAW JSON => ", v.Command)
+		fmt.Println("UNMARSHALING JSON ==> ", bytes.TrimLeft(bytes.TrimRight(v.Command, "\x00"), "\x00"))
+		rightTrimmed := bytes.TrimRight(v.Command, "\x00")
+		fmt.Println("RIGHT TRIMMED => ", rightTrimmed)
+		fullTrimmed := bytes.TrimLeft(rightTrimmed, "\x00")
+		fmt.Println("FULL TRIMMED => ", fullTrimmed)
+		err := json.Unmarshal(fullTrimmed, &p)
+
+		if err != nil {
+			fmt.Println("ERR => ", err)
+			panic("Unable to unmarshal entty")
+		}
+
+		payload.Entries = append(payload.Entries, p)
+		fmt.Println("UNMASHALLED JSON ==+ ", p)
+	}
+
+	url := fmt.Sprintf("http://127.0.0.1:%s/api/add", kvstore.KVServ.Port)
+
+	fmt.Println("URL: ", url)
+
+	bytePayload, err := json.Marshal(payload)
+
+	if err != nil {
+		fmt.Println("ERR => ", err)
+
+		panic("Unable to convert payload to json")
+	}
+
+	fmt.Println("JSON PAYLOAD ==> ", bytePayload)
+	// send http request to key-val store
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(bytePayload))
+	if err != nil {
+		fmt.Printf("Request failed: %v\n", err)
+
+		return err, false
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+
+	if err != nil {
+		fmt.Println("UNABLE TO READ RESPONSE BODY: err => ", err)
+	} else {
+		fmt.Printf("RESP => %d %s\n", resp.StatusCode, string(respBody))
+
+	}
+
+	resp.Body.Close()
+
+	return nil, true
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/rpc"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,7 +70,7 @@ func StartHeartbeatTimer(revert *chan bool, resetElecTimerChan *chan bool) {
 }
 
 func disperseHeartbeatRequests() {
-	members := membership.GetClusterMembers()
+	members := membership.ClusterMembers.GetClusterMembers()
 
 	responses := 0
 	// loop through members and send heartbeat requests in parallel
@@ -93,23 +94,22 @@ func disperseHeartbeatRequests() {
 /**
 * Replicates logs across followers
 **/
-func ReplicateLogs(entries []string) (err error) {
-	members := membership.GetClusterMembers()
-	var entriesInBytes [][]byte = make([][]byte, 0)
-
-	// convert string to bytes and append
-	for _, entry := range entries {
-		byteEntry := make([]byte, state.LOG_LENGTH-8)
-		copy(byteEntry, entry)
-		entriesInBytes = append(entriesInBytes, byteEntry)
-	}
+func ReplicateLogs() (err error) {
+	members := membership.ClusterMembers.GetClusterMembers()
 
 	responses := 0
 	// loop through members and send heartbeat requests in parallel
 	for _, mem := range members {
 		if mem != state.Node.Ip {
+			err, byteEntr := state.Node.GetUnreplicatedLogs(mem)
+
+			if err != nil {
+				fmt.Println(err.Error())
+				panic("unable to retrieve unreplicated logs")
+			}
+
 			wg.Add(1)
-			go sendAppendEntriesRPC(mem, &responses, entriesInBytes)
+			go sendAppendEntriesRPC(mem, &responses, byteEntr)
 		}
 	}
 
@@ -148,7 +148,17 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byt
 	fmt.Println("APPENDENTRIES LENGTH => ", len(state.Node.Logs))
 	// TODO: Switch PrevLogIndex with actual prev log index of follower node(minus no. of logs)
 
-	args := &AppendEntriesArgs{Term: int(state.Node.Term), LeaderId: state.Node.Id, PrevLogIndex: max(int(membership.ClusterMembers.Members[addr])-1, 0), Entries: entries, LeaderCommitIndex: int(state.Node.CommitIndex), PrevLogTerm: state.Node.GetLastLogTerm(max(int(membership.ClusterMembers.Members[addr]-1), 0))}
+	nodeNextIndex := membership.ClusterMembers.Members[serverAddr]
+
+	args := &AppendEntriesArgs{
+		Term:              int(state.Node.Term),
+		LeaderId:          state.Node.Id,
+		PrevLogIndex:      max(int(nodeNextIndex-1), 0),
+		Entries:           entries,
+		LeaderCommitIndex: int(state.Node.CommitIndex),
+		PrevLogTerm:       state.Node.GetLastLogTerm(max(int(nodeNextIndex-1), 0)),
+	}
+
 	res := &AppendEntriesRes{}
 
 	err = client.Call("ReplicationRPC.AppendEntriesRPC", args, &res)
@@ -159,7 +169,11 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byt
 		return
 	}
 
-	fmt.Println("FOLLOWER LAST LOG INDEX ==> ", res.FollowerLastLogIndex)
+	if res.FollowerLastLogIndex != -1 {
+		fmt.Println("FOLLOWER LAST LOG INDEX ==> ", res.FollowerLastLogIndex)
+	} else {
+		fmt.Println("FOLLOWER LAST LOG INDEX IS NIL ++++++++++++++++++++>")
+	}
 
 	// If a follower responds with a higher term, revert to follower
 	if !res.Success && int64(res.Term) > state.Node.Term {
@@ -178,73 +192,113 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byt
 		*succResponses += 1
 		mu.Unlock()
 
-		go membership.ClusterMembers.IncrementNodeNextIndex(addr, uint(len(entries)))
+		membership.ClusterMembers.IncrementNodeNextIndex(serverAddr, uint(len(entries)), len(state.Node.Logs))
+
+		return
 	}
 
 	// If follower is missing logs, recalibrate and resend
-	if !res.Success && res.FollowerLastLogIndex != 0 {
+	if !res.Success && res.FollowerLastLogIndex >= 0 {
 		fmt.Println("FOLLOWER LAST LOG INDEX DOES NOT MATCH ==>")
-		if res.FollowerLastLogIndex < int(membership.ClusterMembers.Members[addr]) {
-			// Reduce node nextIndex in state
-			membership.ClusterMembers.DecrementNodeNextIndex(addr, uint(res.FollowerLastLogIndex))
+		fmt.Printf("(%s) NEXTNODEINDEX BEFORE INCREMENTING -----------------------------> %d\n", addr, membership.ClusterMembers.Members[serverAddr])
+		fmt.Println("CURR LOG LENGTH => ", len(state.Node.Logs))
+		// Reduce node nextIndex in state
 
-		} else {
-			membership.ClusterMembers.SetNodeNextIndex(addr, uint(res.FollowerLastLogIndex))
+		// if follower is up to date, consider this as successful
+		if res.FollowerLastLogIndex >= (len(state.Node.Logs) - 1) {
+			membership.ClusterMembers.SetNodeNextIndex(serverAddr, uint(res.FollowerLastLogIndex+1), len(state.Node.Logs))
+
+			mu.Lock()
+			*succResponses += 1
+			mu.Unlock()
+
+			return
 		}
+
+		membership.ClusterMembers.SetNodeNextIndex(serverAddr, uint(res.FollowerLastLogIndex+1), len(state.Node.Logs))
+
 		// Get logs from the new index onwards
 
 		k := make([][]byte, 0)
-		for _, v := range state.Node.Logs[res.FollowerLastLogIndex:] {
+		fmt.Println("FOLLOWER LAST LOG INDE **********> ", res.FollowerLastLogIndex)
+		missingEntries := state.Node.Logs[(res.FollowerLastLogIndex + 1):]
+		for idx, v := range missingEntries {
+			fmt.Println("ADDING COMMAND *******************> ", v.Command)
+			fmt.Println("PLACEHOLDER COMMD ********> ", string(missingEntries[idx].Command))
 			k = append(k, v.Command)
 		}
 
 		// Resend Append Entry response
-		sendAppendEntriesRPC(addr, succResponses, k)
+		// sendAppendEntriesRPC(addr, succResponses, k)
+		retryAppendEntriesRPC(k, addr, client, succResponses)
 
 		return
 	}
+
+	// if another error occured, retry indefinitely
+
+}
+
+func retryAppendEntriesRPC(entries [][]byte, addr string, client *rpc.Client, succResponses *int) {
+	address := fmt.Sprintf(":%s", strings.Split(addr, ":")[1])
+
+	args := &AppendEntriesArgs{
+		Term:     int(state.Node.Term),
+		LeaderId: state.Node.Id,
+		PrevLogIndex: max(int(membership.ClusterMembers.Members[address])-1,
+			0),
+		Entries:           entries,
+		LeaderCommitIndex: int(state.Node.CommitIndex),
+		PrevLogTerm:       state.Node.GetLastLogTerm(max(int(membership.ClusterMembers.Members[address]-1), 0)),
+	}
+
+	res := &AppendEntriesRes{}
+
+	err := client.Call("ReplicationRPC.AppendEntriesRPC", args, &res)
+
+	if err != nil {
+		log.Println("ReplicationRPC ERR -> ", err)
+		// log.Fatal("RPC error:", err)
+		return
+	}
+
+	fmt.Println("RETRY SUCCESS ==> ", res.Success)
+
+	// If a follower responds with a higher term, revert to follower
+	if !res.Success && int64(res.Term) > state.Node.Term {
+		heartBeatTicker.Stop()
+		state.Node.IncrementTerm(&res.Term)
+		state.Node.Role = state.FOLLOWER
+		*revertToLeaderChan <- true
+		// election.InitElectionFlow()
+
+		fmt.Println("Reverting to follower.")
+		return
+	}
+
+	if res.Success {
+		mu.Lock()
+		*succResponses += 1
+		mu.Unlock()
+
+		membership.ClusterMembers.IncrementNodeNextIndex(address, uint(len(entries)), len(state.Node.Logs))
+	}
+
+	return
+
 }
 
 /**
 * Handles AppendEntriesRPC from leader which  includes heartbeats(empty AppendEntriesRPC)
  */
 func (t *ReplicationRPC) AppendEntriesRPC(args *AppendEntriesArgs, appendRes *AppendEntriesRes) error {
-	lenOfLogs := len(state.Node.Logs)
 	fmt.Printf("(%s) REPLICATION RPC FROM %s with term %d\n", state.Node.Ip, args.LeaderId, args.Term)
 	fmt.Printf("(%s) CURRENT LEADER => %s WITH TERM => %d\n", state.Node.Ip, state.Node.VotedFor, state.Node.Term)
 
 	if args.Term < int(state.Node.Term) {
 		fmt.Println("LEADER TERM IS LESS THAN MY TERM...")
 		appendRes.Success = false
-
-		return nil
-	}
-
-	// Log Matching check
-	if args.PrevLogIndex > 0 && (lenOfLogs-1 < args.PrevLogIndex || state.Node.Logs[args.PrevLogIndex].Term != int64(args.PrevLogTerm)) {
-		fmt.Println("ENTRY AT PREVLOGINDEX DOES NOT MATCH...")
-		fmt.Printf("PREVLOGINDEX: => %d \t\t LOGLEN => %d\n", args.PrevLogIndex, lenOfLogs)
-
-		if args.PrevLogIndex > lenOfLogs-1 {
-			// Missing data. This follower is not up to date
-			// Send back last log Index
-			appendRes.FollowerLastLogIndex = lenOfLogs - 1
-
-			appendRes.Success = false
-			return nil
-		}
-
-		if lenOfLogs-1 > args.PrevLogIndex {
-			fmt.Printf("LASTLOGTERM => %d \t\t LEADERLASTLOGTERM => %d\n", state.Node.Logs[args.PrevLogIndex].Term, args.PrevLogTerm)
-
-			fmt.Println("CONFLICTING ENTRY => ", state.Node.Logs[args.PrevLogIndex])
-
-			// panic("CONFLICTING ENTRIES")
-			appendRes.Success = false
-			appendRes.FollowerLastLogIndex = lenOfLogs - 1
-
-		}
-		appendRes.Success = false
+		appendRes.FollowerLastLogIndex = -1
 
 		return nil
 	}
@@ -258,11 +312,52 @@ func (t *ReplicationRPC) AppendEntriesRPC(args *AppendEntriesArgs, appendRes *Ap
 		}
 	}
 
-	timeouts.ResetElectionTimer()
+	// Log Matching check
+	if args.PrevLogIndex > 0 && ((len(state.Node.Logs))-1 < args.PrevLogIndex || state.Node.Logs[args.PrevLogIndex].Term != int64(args.PrevLogTerm)) {
+		fmt.Println("ENTRY AT PREVLOGINDEX DOES NOT MATCH...")
+		fmt.Printf("PREVLOGINDEX: => %d \t\t LOGLEN => %d\n", args.PrevLogIndex, len(state.Node.Logs))
+
+		if args.PrevLogIndex > len(state.Node.Logs)-1 {
+			// Missing entries. This follower is not up to date
+			// Send back last log Index
+			appendRes.FollowerLastLogIndex = max(len(state.Node.Logs)-1, 0)
+
+			appendRes.Success = false
+			return nil
+		}
+
+		if len(state.Node.Logs)-1 > args.PrevLogIndex {
+			fmt.Printf("LASTLOGTERM => %d \t\t LEADERLASTLOGTERM => %d\n", state.Node.Logs[args.PrevLogIndex].Term, args.PrevLogTerm)
+
+			fmt.Println("CONFLICTING ENTRY => ", state.Node.Logs[args.PrevLogIndex])
+
+			// panic("CONFLICTING ENTRIES")
+			// Follower should not have more entries than leader.
+			// Delete entriesfrom volatile and persisten state
+			err, newLen := state.Node.DeleteConfictingLogs(uint(args.PrevLogIndex + 1))
+
+			if err != nil {
+				fmt.Println("ERR => ", err)
+				log.Panic("unable to delete conflicting logs")
+			}
+
+			appendRes.Success = false
+			appendRes.FollowerLastLogIndex = max(newLen-1, 0)
+
+			return nil
+		}
+
+		appendRes.Success = false
+
+		return nil
+	}
+
+	timeouts.RaftTimeouts.ResetElectionTimer()
 	appendRes.Term = int(state.Node.Term)
 
 	if len(args.Entries) <= 0 {
 		appendRes.Success = true
+		appendRes.FollowerLastLogIndex = -1
 		return nil
 	}
 
@@ -271,6 +366,9 @@ func (t *ReplicationRPC) AppendEntriesRPC(args *AppendEntriesArgs, appendRes *Ap
 	// err, _ := state.WriteToLogs(args.Entries)
 	state.Node.AddEntries(args.Term, args.PrevLogIndex, args.Entries, args.LeaderCommitIndex)
 
+	state.Node.ApplyToStateMachine(uint(len(args.Entries)), &args.LeaderCommitIndex)
+
 	appendRes.Success = true
+	appendRes.FollowerLastLogIndex = -1
 	return nil
 }

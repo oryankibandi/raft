@@ -25,7 +25,11 @@ func (t *ClientRPC) ClientReplicationRequest(args ClientRequestRPC, clientRes *C
 	// TODO: Check if is leader,if isn't redirect to leader
 
 	if state.Node.Role != state.LEADER {
-		clientRes.CurrentLeader = state.Node.VotedFor
+
+		if state.Node.VotedFor != "" {
+			clientRes.CurrentLeader = state.Node.VotedFor
+		}
+
 		clientRes.Success = false
 
 		return nil
@@ -41,6 +45,7 @@ func (t *ClientRPC) ClientReplicationRequest(args ClientRequestRPC, clientRes *C
 	for _, v := range args.Entries {
 		k := make([]byte, state.LOG_LENGTH-8)
 		copy(k, v)
+		fmt.Println("COPIED ENTRY ===> ", k)
 		byteEntr = append(byteEntr, k)
 	}
 
@@ -53,7 +58,7 @@ func (t *ClientRPC) ClientReplicationRequest(args ClientRequestRPC, clientRes *C
 	}
 
 	// Send to followers
-	err = replication.ReplicateLogs(args.Entries)
+	err = replication.ReplicateLogs()
 
 	if err != nil {
 		fmt.Println("Unable to replicate => ", err.Error())
@@ -61,6 +66,9 @@ func (t *ClientRPC) ClientReplicationRequest(args ClientRequestRPC, clientRes *C
 		clientRes.Success = false
 		return nil
 	}
+
+	// Add entries to state machine
+	state.Node.ApplyToStateMachine(uint(len(args.Entries)), nil)
 
 	clientRes.Success = true
 
