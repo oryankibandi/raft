@@ -12,7 +12,6 @@ import (
 	"raft/membership"
 	"raft/state"
 	"raft/timeouts"
-	"raft/utils"
 )
 
 type ReplicationRPC struct{}
@@ -42,7 +41,7 @@ var resetElectionTimerChan *chan bool
 func StartHeartbeatTimer(revert *chan bool, resetElecTimerChan *chan bool) {
 	revertToLeaderChan = revert
 	resetElectionTimerChan = resetElecTimerChan
-	heartBeatTicker = time.NewTicker(time.Second * time.Duration(utils.GenerateHeartbeatDuration()))
+	heartBeatTicker = time.NewTicker(timeouts.RaftTimeouts.GenerateHeartBeatDuration())
 
 	for {
 		select {
@@ -55,7 +54,7 @@ func StartHeartbeatTimer(revert *chan bool, resetElecTimerChan *chan bool) {
 				break
 			}
 
-			heartBeatTicker.Reset(time.Second * time.Duration(utils.GenerateHeartbeatDuration()))
+			heartBeatTicker.Reset(timeouts.RaftTimeouts.GenerateHeartBeatDuration())
 			// Send AppendEntryRPC Requests
 			go disperseHeartbeatRequests()
 		case rev := <-*revertToLeaderChan:
@@ -73,15 +72,28 @@ func disperseHeartbeatRequests() {
 	members := membership.ClusterMembers.GetClusterMembers()
 
 	responses := 0
+	succRes := make(chan bool, len(members))
 	// loop through members and send heartbeat requests in parallel
 	for _, mem := range members {
 		if mem != state.Node.Ip {
-			wg.Add(1)
-			go sendAppendEntriesRPC(mem, &responses, make([][]byte, 0))
+			// wg.Add(1)
+			go sendAppendEntriesRPC(mem, succRes, make([][]byte, 0))
 		}
 	}
 
-	wg.Wait()
+	// wg.Wait()
+	for responses+1 >= int(float64(len(members))/float64(2)) {
+		select {
+		case succ := <-succRes:
+			if succ {
+				mu.Lock()
+				responses += 1
+				mu.Unlock()
+			}
+		default:
+			continue
+		}
+	}
 
 	// Check if the required quota of servers have responded successfully
 	if responses+1 < int(float64(len(members))/float64(2)) {
@@ -95,9 +107,12 @@ func disperseHeartbeatRequests() {
 * Replicates logs across followers
 **/
 func ReplicateLogs() (err error) {
+	fmt.Println("REPLICATING LOGS ===========================.....>")
 	members := membership.ClusterMembers.GetClusterMembers()
 
 	responses := 0
+	succResponses := 0
+	repChan := make(chan bool, len(members))
 	// loop through members and send heartbeat requests in parallel
 	for _, mem := range members {
 		if mem != state.Node.Ip {
@@ -105,18 +120,31 @@ func ReplicateLogs() (err error) {
 
 			if err != nil {
 				fmt.Println(err.Error())
-				panic("unable to retrieve unreplicated logs")
+				panic("unable to retrieve unreplicated logs=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=")
 			}
 
-			wg.Add(1)
-			go sendAppendEntriesRPC(mem, &responses, byteEntr)
+			// wg.Add(1)
+			go sendAppendEntriesRPC(mem, repChan, byteEntr)
 		}
 	}
 
-	wg.Wait()
+	// Loop until quorum is reached, then proceed
+	for succResponses+1 < int(float64(len(members))/float64(2)) && responses < len(members) {
+		select {
+		case succ := <-repChan:
+			mu.Lock()
+			responses += 1
+			if succ {
+				succResponses += 1
+			}
+			mu.Unlock()
+		}
+	}
+	fmt.Println("**********************Necesary quota reached => ", responses)
+	// wg.Wait()
 
 	// Check if the required quota of servers have responded successfully
-	if responses+1 < int(float64(len(members))/float64(2)) {
+	if succResponses+1 < int(float64(len(members))/float64(2)) {
 		state.Node.UpdateServerState(state.FOLLOWER)
 		*revertToLeaderChan <- true
 
@@ -129,8 +157,8 @@ func ReplicateLogs() (err error) {
 /**
 * Send's append entries RPC to specified address. For heartbeats entries slice is empty
  */
-func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byte) {
-	defer wg.Done()
+func sendAppendEntriesRPC(serverAddr string, resChan chan bool, entries [][]byte) {
+	// defer wg.Done()
 	addr := fmt.Sprintf("localhost%s", serverAddr)
 	client, err := rpc.Dial("tcp", addr)
 
@@ -188,9 +216,10 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byt
 	}
 
 	if res.Success {
-		mu.Lock()
-		*succResponses += 1
-		mu.Unlock()
+		// mu.Lock()
+		// *succResponses += 1
+		// mu.Unlock()
+		resChan <- true
 
 		membership.ClusterMembers.IncrementNodeNextIndex(serverAddr, uint(len(entries)), len(state.Node.Logs))
 
@@ -208,9 +237,11 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byt
 		if res.FollowerLastLogIndex >= (len(state.Node.Logs) - 1) {
 			membership.ClusterMembers.SetNodeNextIndex(serverAddr, uint(res.FollowerLastLogIndex+1), len(state.Node.Logs))
 
-			mu.Lock()
-			*succResponses += 1
-			mu.Unlock()
+			// mu.Lock()
+			// *succResponses += 1
+			// mu.Unlock()
+
+			resChan <- true
 
 			return
 		}
@@ -230,7 +261,7 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byt
 
 		// Resend Append Entry response
 		// sendAppendEntriesRPC(addr, succResponses, k)
-		retryAppendEntriesRPC(k, addr, client, succResponses)
+		retryAppendEntriesRPC(k, addr, client, resChan)
 
 		return
 	}
@@ -239,7 +270,7 @@ func sendAppendEntriesRPC(serverAddr string, succResponses *int, entries [][]byt
 
 }
 
-func retryAppendEntriesRPC(entries [][]byte, addr string, client *rpc.Client, succResponses *int) {
+func retryAppendEntriesRPC(entries [][]byte, addr string, client *rpc.Client, succChan chan bool) {
 	address := fmt.Sprintf(":%s", strings.Split(addr, ":")[1])
 
 	args := &AppendEntriesArgs{
@@ -277,9 +308,10 @@ func retryAppendEntriesRPC(entries [][]byte, addr string, client *rpc.Client, su
 	}
 
 	if res.Success {
-		mu.Lock()
-		*succResponses += 1
-		mu.Unlock()
+		// mu.Lock()
+		// *succResponses += 1
+		// mu.Unlock()
+		succChan <- true
 
 		membership.ClusterMembers.IncrementNodeNextIndex(address, uint(len(entries)), len(state.Node.Logs))
 	}

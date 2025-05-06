@@ -61,7 +61,7 @@ func (t *ClientRPC) ClientReplicationRequest(args ClientRequestRPC, clientRes *C
 	err = replication.ReplicateLogs()
 
 	if err != nil {
-		fmt.Println("Unable to replicate => ", err.Error())
+		fmt.Println("Unable to replicate =======================================================================> ", err.Error())
 
 		clientRes.Success = false
 		return nil

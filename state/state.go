@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"raft/membership"
+	"raft/utils"
 	"sync"
 
 	kvstore "raft/kv_store"
@@ -187,9 +188,10 @@ func (s *Server) AddEntries(term int, prevLogIndex int, command [][]byte, leader
 	}
 
 	for idx, comm := range command {
-		fmt.Printf("COMMAND TO ADD => %s\n", comm)
+		fmt.Printf("COMMAND TO ADD => %d\n", comm)
 		n := bytes.TrimRight(comm, "\x00")
 		comm = bytes.TrimLeft(n, "\x00")
+		fmt.Printf("TRIMMED COMMAND TO ADD =-=-=-=-=-=-=-> %d\n", comm)
 		if len(s.Logs) > 0 && s.entryExists(prevLogIndex+1+idx) {
 			fmt.Println("ENTRY EXISTS ==> ")
 			fmt.Printf("EXISTING ENTry AT IDX: %d  =>  %s\n", prevLogIndex+1+idx, s.Logs[prevLogIndex+1+idx])
@@ -620,12 +622,13 @@ func (s *Server) ApplyToStateMachine(numOfEntries uint, newCommitIndex *int) (er
 	}
 
 	for _, v := range l {
-		byteEntr = append(byteEntr, v.Command)
+		comm := utils.RemoveControlChar(v.Command)
+		byteEntr = append(byteEntr, comm)
 
 		p := StateMachineEntry{}
-		fmt.Println("RAW JSON => ", v.Command)
-		fmt.Println("UNMARSHALING JSON ==> ", bytes.TrimLeft(bytes.TrimRight(v.Command, "\x00"), "\x00"))
-		rightTrimmed := bytes.TrimRight(v.Command, "\x00")
+		fmt.Println("RAW JSON => ", comm)
+		fmt.Println("UNMARSHALING JSON ==> ", bytes.TrimLeft(bytes.TrimRight(comm, "\x00"), "\x00"))
+		rightTrimmed := bytes.TrimRight(comm, "\x00")
 		fmt.Println("RIGHT TRIMMED => ", rightTrimmed)
 		fullTrimmed := bytes.TrimLeft(rightTrimmed, "\x00")
 		fmt.Println("FULL TRIMMED => ", fullTrimmed)
@@ -633,7 +636,7 @@ func (s *Server) ApplyToStateMachine(numOfEntries uint, newCommitIndex *int) (er
 
 		if err != nil {
 			fmt.Println("ERR => ", err)
-			panic("Unable to unmarshal entty")
+			panic("Unable to unmarshal entry")
 		}
 
 		payload.Entries = append(payload.Entries, p)

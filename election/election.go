@@ -36,7 +36,6 @@ var mu sync.Mutex
  */
 func InitElectionFlow() {
 	fmt.Println("Initializing election flow...")
-	timeouts.RaftTimeouts = timeouts.Timers{}
 
 	electionTimeoutChann := make(chan bool)
 
@@ -52,10 +51,11 @@ func InitElectionFlow() {
 				// Start election in another goroutine
 				go StartElection()
 				// Close channel
-				break
+				return
 			}
-		default:
-			continue
+			//		default:
+			//			fmt.Println("No TIMEOUT, CONTINUE")
+			//			continue
 		}
 
 	}

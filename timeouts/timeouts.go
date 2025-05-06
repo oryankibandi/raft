@@ -2,20 +2,38 @@ package timeouts
 
 import (
 	"fmt"
+	"math/rand"
 	"time"
-
-	"raft/utils"
 )
 
 type Timers struct {
-	ElectionTimer *time.Ticker
+	ElectionTimer  *time.Timer
+	MaxElecTimeout time.Duration
+	MinElecTimeout time.Duration
+	rnd            *rand.Rand
 }
 
 var RaftTimeouts Timers
 
+const (
+	MAX_ELEC_TIMEOUT uint = 300
+	MIN_ELEC_TIMEOUT uint = 150
+)
+
 func init() {
 	RaftTimeouts = Timers{
-		ElectionTimer: time.NewTicker(time.Second * time.Duration(utils.GenerateElectionTimeoutDuration())),
+		MaxElecTimeout: time.Duration(MAX_ELEC_TIMEOUT) * time.Millisecond,
+		MinElecTimeout: time.Duration(MIN_ELEC_TIMEOUT) * time.Millisecond,
+		rnd:            rand.New(rand.NewSource(time.Now().UnixNano())),
+	}
+
+	// RaftTimeouts.initElecTimer()
+	fmt.Println("INITIALIZED RAFT TIMEOUTS")
+}
+
+func (t *Timers) initElecTimer() {
+	if t.ElectionTimer == nil {
+		t.ElectionTimer = time.NewTimer(t.GenerateElecTimeoutDuration())
 	}
 }
 
@@ -23,16 +41,23 @@ func init() {
 * Starts a timeout after which, the server converts to candidate and sends RequestVoteRPC
  */
 func (t *Timers) StartElectionTimeout(reset chan bool) {
-	if t.ElectionTimer == nil {
-		t.ElectionTimer = time.NewTicker(time.Second * time.Duration(utils.GenerateElectionTimeoutDuration()))
+	if t.ElectionTimer != nil {
+		t.ElectionTimer.Stop()
+		t.ElectionTimer.Reset(t.GenerateElecTimeoutDuration())
+
+	} else {
+		fmt.Println("TIMER IS NILL, INITIALIZING...")
+		t.ElectionTimer = time.NewTimer(t.GenerateElecTimeoutDuration())
 	}
+
+	defer t.ElectionTimer.Stop()
 
 	for {
 		select {
 		case l := <-reset:
 			if l && t.ElectionTimer != nil {
 				fmt.Println("Resetting election ticker...")
-				t.ElectionTimer.Reset(time.Second * time.Duration(utils.GenerateElectionTimeoutDuration()))
+				t.ElectionTimer.Reset(t.GenerateElecTimeoutDuration())
 			}
 		case <-t.ElectionTimer.C:
 			fmt.Printf("Election timout reached...\n")
@@ -40,7 +65,7 @@ func (t *Timers) StartElectionTimeout(reset chan bool) {
 				t.ElectionTimer.Stop()
 			}
 			reset <- true
-			break
+			return
 		}
 	}
 }
@@ -51,7 +76,7 @@ func (t *Timers) StartElectionTimeout(reset chan bool) {
 func (t *Timers) ResetElectionTimer() {
 	fmt.Println("Resetting election timer...")
 	if t.ElectionTimer != nil {
-		t.ElectionTimer.Reset(time.Second * time.Duration(utils.GenerateElectionTimeoutDuration()))
+		t.ElectionTimer.Reset(t.GenerateElecTimeoutDuration())
 	}
 }
 
@@ -63,4 +88,18 @@ func (t *Timers) CancelElectionTimer() {
 		t.ElectionTimer.Stop()
 		t.ElectionTimer = nil
 	}
+}
+
+func (t *Timers) GenerateElecTimeoutDuration() (dur time.Duration) {
+	diff := t.MaxElecTimeout - t.MinElecTimeout
+
+	m := t.MinElecTimeout + time.Duration(t.rnd.Int63n(diff.Milliseconds()))
+
+	fmt.Println("GENERATED RANDOME ELEC TIMEOUT => ", m)
+
+	return m
+}
+
+func (t *Timers) GenerateHeartBeatDuration() (dur time.Duration) {
+	return time.Duration(50) * time.Millisecond
 }

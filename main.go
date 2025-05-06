@@ -38,8 +38,6 @@ func init() {
 	go state.InitializeState(&Wg, os.Args[1])
 	Wg.Wait()
 	fmt.Println("Initialized state")
-	// Initialize election timeout
-	go election.InitElectionFlow()
 
 }
 
@@ -48,11 +46,11 @@ func main() {
 	formattedAddr := fmt.Sprintf("localhost%s", os.Args[1])
 	fmt.Println("ADDR => ", formattedAddr)
 	// open RPC connections
-	election := new(election.ElectionRPC)
+	elec := new(election.ElectionRPC)
 	replicationRPC := new(replication.ReplicationRPC)
 	clientRPC := new(client.ClientRPC)
 
-	rpc.Register(election)
+	rpc.Register(elec)
 	rpc.Register(replicationRPC)
 	rpc.Register(clientRPC)
 
@@ -76,6 +74,8 @@ func main() {
 	go kvstore.InitializeApi(os.Args[2])
 
 	fmt.Printf("Listening on port %s\n\n", os.Args[1])
+	// Initialize election timeout
+	go election.InitElectionFlow()
 
 	go func() {
 		for {
