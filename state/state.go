@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"os"
 	"raft/membership"
-	"raft/utils"
+	"raft/pkg/binparser"
 	"sync"
 
 	kvstore "raft/kv_store"
@@ -622,7 +622,7 @@ func (s *Server) ApplyToStateMachine(numOfEntries uint, newCommitIndex *int) (er
 	}
 
 	for _, v := range l {
-		comm := utils.RemoveControlChar(v.Command)
+		comm := binparser.RemoveControlChar(v.Command)
 		byteEntr = append(byteEntr, comm)
 
 		p := StateMachineEntry{}

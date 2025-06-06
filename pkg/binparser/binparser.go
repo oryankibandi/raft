@@ -1,4 +1,4 @@
-package utils
+package binparser
 
 /*
 Removes control characters (1 - 31 ASCII)
